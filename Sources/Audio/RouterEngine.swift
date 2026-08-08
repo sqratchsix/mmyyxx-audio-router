@@ -66,7 +66,6 @@ final class RouterEngine: @unchecked Sendable {
     func start(output: AudioDeviceInfo,
                loopback: AudioDeviceInfo,
                sources: [MixerSource],
-               pinLoopbackVolume: Bool = false,
                sampleRate: Double = 48_000) {
         stop()
 
@@ -108,7 +107,6 @@ final class RouterEngine: @unchecked Sendable {
             }
 
             claimOutputVolumes(on: output)
-            if pinLoopbackVolume { claimMasterVolume(on: loopback) }
 
             aggregate = device
             procID = proc
@@ -157,21 +155,6 @@ final class RouterEngine: @unchecked Sendable {
             Diagnostics.log(String(format: "channel %d volume %.3f -> 1.000 (device control claimed)",
                                    channel, original))
         }
-    }
-
-    /// Pin the loopback device's master volume to unity.
-    ///
-    /// Once system output points at the loopback device, the macOS volume slider
-    /// stops being the last stage in the chain and becomes the first: it
-    /// attenuates digitally before the mixer sums anything, costing level and
-    /// resolution for no benefit. Unity here keeps the app's faders as the only
-    /// place gain is applied.
-    private func claimMasterVolume(on device: AudioDeviceInfo) {
-        guard let original = AudioDevices.outputVolume(device.id, channel: 0), original < 0.999 else { return }
-        guard AudioDevices.setOutputVolume(device.id, channel: 0, 1.0) else { return }
-        borrowedVolumes.append((device.id, 0, original))
-        Diagnostics.log(String(format: "%@ master volume %.3f -> 1.000 (upstream attenuation removed)",
-                               device.name, original))
     }
 
     private func releaseOutputVolumes() {

@@ -3,7 +3,13 @@ import SwiftUI
 /// Vertical console fader. Travel is relative to where the drag started rather
 /// than absolute, so grabbing the cap never makes the level jump.
 struct Fader: View {
-    @Binding var dB: Float
+    /// Travel, 0 at the bottom and 1 at the top. Callers own the mapping from
+    /// travel to whatever the fader controls, because a dB taper and a device
+    /// volume scalar are not the same curve.
+    @Binding var position: CGFloat
+    /// Where a double-click sends it. Unity for a dB fader, full for a device volume.
+    var resetPosition: CGFloat = 0.75
+    var unityMark: CGFloat? = 0.25
     var onEditingChanged: (Bool) -> Void = { _ in }
 
     private let capHeight: CGFloat = 22
@@ -11,8 +17,6 @@ struct Fader: View {
     private let trackWidth: CGFloat = 5
 
     @State private var dragStartPosition: CGFloat?
-
-    private var position: CGFloat { LevelMath.faderPosition(forDB: dB) }
 
     var body: some View {
         GeometryReader { geometry in
@@ -33,8 +37,7 @@ struct Fader: View {
                             onEditingChanged(true)
                         }
                         let delta = -value.translation.height / travel
-                        let next = min(max((dragStartPosition ?? position) + delta, 0), 1)
-                        dB = LevelMath.faderDB(forPosition: next)
+                        position = min(max((dragStartPosition ?? position) + delta, 0), 1)
                     }
                     .onEnded { _ in
                         dragStartPosition = nil
@@ -42,16 +45,18 @@ struct Fader: View {
                     }
             )
             .onTapGesture(count: 2) {
-                withAnimation(.spring(response: 0.28, dampingFraction: 0.8)) { dB = 0 }
+                withAnimation(.spring(response: 0.28, dampingFraction: 0.8)) {
+                    position = resetPosition
+                }
             }
         }
         .frame(width: capWidth)
         .accessibilityElement()
         .accessibilityLabel("Fader")
-        .accessibilityValue("\(LevelMath.format(dB: dB)) decibels")
+        .accessibilityValue("\(Int(position * 100)) percent of travel")
         .accessibilityAdjustableAction { direction in
-            let step: Float = direction == .increment ? 0.5 : -0.5
-            dB = min(6, max(LevelMath.silenceDB, dB + step))
+            let step: CGFloat = direction == .increment ? 0.02 : -0.02
+            position = min(max(position + step, 0), 1)
         }
     }
 
@@ -73,11 +78,13 @@ struct Fader: View {
                     .frame(width: trackWidth, height: max(0, height - capCenterY))
             }
 
-            // Unity mark.
-            Rectangle()
-                .fill(Theme.textTertiary.opacity(0.8))
-                .frame(width: 11, height: 1)
-                .offset(y: capHeight / 2 + travel * 0.25 - 0.5)
+            // Unity mark, where the control has a meaningful one.
+            if let unityMark {
+                Rectangle()
+                    .fill(Theme.textTertiary.opacity(0.8))
+                    .frame(width: 11, height: 1)
+                    .offset(y: capHeight / 2 + travel * unityMark - 0.5)
+            }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
@@ -103,5 +110,16 @@ struct Fader: View {
             )
             .frame(width: capWidth, height: capHeight)
             .shadow(color: .black.opacity(0.5), radius: 4, y: 2)
+    }
+}
+
+extension Binding where Value == Float {
+    /// Present a dB value as fader travel, applying the console taper in both
+    /// directions.
+    var faderTravel: Binding<CGFloat> {
+        Binding<CGFloat>(
+            get: { LevelMath.faderPosition(forDB: wrappedValue) },
+            set: { wrappedValue = LevelMath.faderDB(forPosition: $0) }
+        )
     }
 }

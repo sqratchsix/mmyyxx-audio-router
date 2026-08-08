@@ -8,15 +8,20 @@ struct SourceStrip: View {
     let rightMeter: MeterBallistics
     @Binding var settings: SourceSettings
     let pairLabels: [String]
+    /// When set, this strip's fader drives an external control instead of the
+    /// app's own gain. Used by the System strip, whose level *is* the macOS
+    /// system volume rather than a second gain stage behind it.
+    var externalTravel: Binding<CGFloat>?
+    var externalReadout: String?
+    var externalIsSilent = false
 
     private var muted: Bool { settings.muted }
 
     /// Whether this source actually reaches an output right now. All three of
     /// these block it, and each one is easy to leave set by accident.
     private var isPassing: Bool {
-        !settings.muted
-            && settings.gainDB > LevelMath.silenceDB
-            && settings.sends.contains(true)
+        guard !settings.muted, settings.sends.contains(true) else { return false }
+        return externalTravel == nil ? settings.gainDB > LevelMath.silenceDB : !externalIsSilent
     }
 
     var body: some View {
@@ -32,11 +37,15 @@ struct SourceStrip: View {
                                    width: 8, isPassing: isPassing)
                     }
                 }
-                Fader(dB: $settings.gainDB)
+                if let externalTravel {
+                    Fader(position: externalTravel, resetPosition: 1, unityMark: nil)
+                } else {
+                    Fader(position: $settings.gainDB.faderTravel)
+                }
             }
             .frame(height: 172)
 
-            Text(LevelMath.format(dB: settings.gainDB))
+            Text(externalReadout ?? LevelMath.format(dB: settings.gainDB))
                 .font(Theme.numeric(10))
                 .foregroundStyle(muted ? Theme.textTertiary : Theme.textPrimary)
                 .frame(maxWidth: .infinity)
@@ -93,7 +102,8 @@ struct SourceStrip: View {
     /// most confusing state this app can be in.
     private var blockedReason: String? {
         if settings.muted { return "MUTED" }
-        if settings.gainDB <= LevelMath.silenceDB { return "FADER DOWN" }
+        if externalTravel == nil, settings.gainDB <= LevelMath.silenceDB { return "FADER DOWN" }
+        if externalTravel != nil, externalIsSilent { return "VOLUME AT ZERO" }
         if !settings.sends.contains(true) { return "NO SEND" }
         return nil
     }

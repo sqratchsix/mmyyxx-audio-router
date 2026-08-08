@@ -53,22 +53,70 @@ final class AppModel: ObservableObject {
     @Published private(set) var meters: [MeterBallistics] = Array(repeating: MeterBallistics(),
                                                                   count: SharedState.outputChannelCount)
 
-    /// Live master volume of the loopback device, which is what the macOS volume
-    /// slider now drives. Anything below unity attenuates ahead of the mixer.
-    @Published private(set) var loopbackVolume: Float = 1
-    @Published var pinLoopbackVolume = false {
-        didSet {
-            guard !isDiscovering, oldValue != pinLoopbackVolume else { return }
-            scheduleSave()
-            // The claim happens at engine start, alongside the output volumes,
-            // so restore-on-quit goes through one code path.
-            restartEngine()
+    /// The loopback device's master volume, which is exactly what the macOS
+    /// volume keys drive once system output points at it. The System strip's
+    /// fader reads and writes this rather than keeping a second, independent
+    /// gain of its own, so the two can never disagree.
+    @Published private(set) var systemVolume: Float = 1
+    @Published private(set) var systemVolumeDB: Float?
+    @Published private(set) var systemVolumeIsLinked = false
+
+    /// Fader travel for the System strip. Travel maps straight to the device
+    /// scalar, so the strip sits exactly where the macOS slider does.
+    var systemVolumeTravel: Binding<CGFloat> {
+        Binding<CGFloat>(
+            get: { CGFloat(self.systemVolume) },
+            set: { self.setSystemVolume(Float(min(max($0, 0), 1))) }
+        )
+    }
+
+    /// True for the strip whose fader is the macOS system volume.
+    func isSystemStrip(_ source: MixerSource) -> Bool {
+        systemVolumeIsLinked && source.id == "system"
+    }
+
+    /// The driver's reported level. BlackHole maps its slider linearly onto a
+    /// -64...0 dB range, so this is read from the device rather than derived.
+    var systemVolumeReadout: String {
+        if let dB = systemVolumeDB, dB.isFinite {
+            return systemVolume <= 0.0001 ? "−∞" : String(format: "%.0f", dB)
+        }
+        return "\(Int(systemVolume * 100))%"
+    }
+
+    func setSystemVolume(_ scalar: Float) {
+        guard let loopback else { return }
+        systemVolume = scalar
+        AudioDevices.setOutputVolume(loopback.id, channel: 0, scalar)
+        systemVolumeDB = AudioDevices.outputVolumeDecibels(loopback.id)
+    }
+
+    private func readSystemVolume() {
+        guard let loopback else { return }
+        if let scalar = AudioDevices.outputVolume(loopback.id, channel: 0) {
+            systemVolume = scalar
+        }
+        systemVolumeDB = AudioDevices.outputVolumeDecibels(loopback.id)
+    }
+
+    private func startSystemVolumeObserver() {
+        stopSystemVolumeObserver()
+        guard let loopback else { return }
+        systemVolumeIsLinked = AudioDevices.hasSettableOutputVolume(loopback.id)
+        guard systemVolumeIsLinked else { return }
+        readSystemVolume()
+        volumeObserverDevice = loopback.id
+        volumeObserver = AudioDevices.observeOutputVolume(loopback.id) { [weak self] in
+            Task { @MainActor in self?.readSystemVolume() }
         }
     }
 
-    var upstreamAttenuationDB: Float? {
-        guard loopbackVolume < 0.999, loopbackVolume > 0 else { return nil }
-        return 20 * log10(loopbackVolume)
+    private func stopSystemVolumeObserver() {
+        if let device = volumeObserverDevice, let block = volumeObserver {
+            AudioDevices.stopObservingOutputVolume(device, block: block)
+        }
+        volumeObserver = nil
+        volumeObserverDevice = nil
     }
 
     var selectedOutput: AudioDeviceInfo? {
@@ -98,6 +146,8 @@ final class AppModel: ObservableObject {
     private var isDiscovering = false
     private var isRebuildingSources = false
     private var hasLoaded = false
+    private var volumeObserver: AudioObjectPropertyListenerBlock?
+    private var volumeObserverDevice: AudioObjectID?
     /// Settings for sources that are not currently present, kept so unplugging
     /// and reconnecting an interface does not discard its mix.
     private var storedSourceSettings: [String: SourceSettings] = [:]
@@ -108,6 +158,7 @@ final class AppModel: ObservableObject {
         loadSettings()
         refreshDevices()
         previousSystemOutputUID = AudioDevices.systemDefaultOutput()?.uid
+        startSystemVolumeObserver()
         startEngine()
         startDisplayTimer()
         // Materialise the file on first run so it always exists to be inspected
@@ -117,6 +168,7 @@ final class AppModel: ObservableObject {
     }
 
     func onTerminate() {
+        stopSystemVolumeObserver()
         saveTimer?.invalidate()
         saveNow()
         engine.stop()
@@ -136,7 +188,6 @@ final class AppModel: ObservableObject {
         storedSourceSettings = persisted.sources
         pairSettings = persisted.pairs
         isDiscovering = true              // suppress the restarts in `didSet`
-        pinLoopbackVolume = persisted.pinLoopbackVolume
         selectedOutputUID = persisted.selectedOutputUID
         isDiscovering = false
         hasLoaded = true
@@ -167,8 +218,7 @@ final class AppModel: ObservableObject {
         storedSourceSettings = merged
         store.save(PersistedSettings(selectedOutputUID: selectedOutputUID,
                                      pairs: pairSettings,
-                                     sources: merged,
-                                     pinLoopbackVolume: pinLoopbackVolume))
+                                     sources: merged))
     }
 
     func resetSettings() {
@@ -259,8 +309,7 @@ final class AppModel: ObservableObject {
             return
         }
 
-        engine.start(output: output, loopback: loopback, sources: sources,
-                     pinLoopbackVolume: pinLoopbackVolume)
+        engine.start(output: output, loopback: loopback, sources: sources)
 
         switch engine.state {
         case .running(let rate, let frames):
@@ -286,7 +335,12 @@ final class AppModel: ObservableObject {
         for index in 0..<count {
             let settings = sourceSettings[index]
             let state = engine.shared.sources[index]
-            state.gain.value = LevelMath.linear(fromDB: settings.gainDB)
+            // When a strip's fader drives the device volume, the attenuation has
+            // already happened upstream. Applying the stored dB here as well
+            // would be a second, invisible gain stage.
+            state.gain.value = isSystemStrip(sources[index])
+                ? 1
+                : LevelMath.linear(fromDB: settings.gainDB)
             state.muted.value = settings.muted
 
             // Stereo sources stay at unity on both sides; the pan law is for
@@ -350,10 +404,6 @@ final class AppModel: ObservableObject {
             slowTickCounter = 0
             let current = AudioDevices.systemDefaultOutput()
             if current?.uid != systemOutput?.uid { systemOutput = current }
-            if let loopback, let volume = AudioDevices.outputVolume(loopback.id, channel: 0),
-               abs(volume - loopbackVolume) > 0.001 {
-                loopbackVolume = volume
-            }
             if loopback == nil || outputCandidates.isEmpty { refreshDevices() }
         }
     }

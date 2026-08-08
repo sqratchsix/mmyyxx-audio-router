@@ -88,18 +88,12 @@ struct PersistedSettings: Codable {
     /// Keyed by `MixerSource.id`, which is stable across relaunches and across
     /// device rescans, so a strip keeps its level when the source list is rebuilt.
     var sources: [String: SourceSettings] = [:]
-    /// Hold the loopback device at unity so the macOS volume slider cannot
-    /// attenuate ahead of the mixer.
-    var pinLoopbackVolume = false
-
     init(selectedOutputUID: String? = nil,
          pairs: [PairSettings] = Array(repeating: PairSettings(), count: SharedState.pairCount),
-         sources: [String: SourceSettings] = [:],
-         pinLoopbackVolume: Bool = false) {
+         sources: [String: SourceSettings] = [:]) {
         self.selectedOutputUID = selectedOutputUID
         self.pairs = pairs
         self.sources = sources
-        self.pinLoopbackVolume = pinLoopbackVolume
     }
 
     init(from decoder: Decoder) throws {
@@ -109,7 +103,6 @@ struct PersistedSettings: Codable {
         pairs = try container.decodeIfPresent([PairSettings].self, forKey: .pairs)
             ?? Array(repeating: PairSettings(), count: SharedState.pairCount)
         sources = try container.decodeIfPresent([String: SourceSettings].self, forKey: .sources) ?? [:]
-        pinLoopbackVolume = try container.decodeIfPresent(Bool.self, forKey: .pinLoopbackVolume) ?? false
     }
 
     func normalized() -> PersistedSettings {

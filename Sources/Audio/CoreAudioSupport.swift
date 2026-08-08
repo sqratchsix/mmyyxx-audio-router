@@ -184,6 +184,49 @@ enum AudioDevices {
         return CA.setValue(id, address, Float32(value)) == noErr
     }
 
+    /// The driver's own idea of the current volume in dB. Worth reading rather
+    /// than deriving from the scalar: BlackHole maps its slider linearly across
+    /// a -64...0 dB range, so 20*log10(scalar) is nowhere near what it applies.
+    static func outputVolumeDecibels(_ id: AudioObjectID, channel: UInt32 = 0) -> Float? {
+        var address = CA.addr(kAudioDevicePropertyVolumeDecibels,
+                              scope: kAudioDevicePropertyScopeOutput,
+                              element: channel)
+        guard AudioObjectHasProperty(id, &address) else { return nil }
+        return CA.value(id, address, as: Float32.self)
+    }
+
+    static func hasSettableOutputVolume(_ id: AudioObjectID, channel: UInt32 = 0) -> Bool {
+        var address = CA.addr(kAudioDevicePropertyVolumeScalar,
+                              scope: kAudioDevicePropertyScopeOutput,
+                              element: channel)
+        guard AudioObjectHasProperty(id, &address) else { return false }
+        var settable: DarwinBoolean = false
+        return AudioObjectIsPropertySettable(id, &address, &settable) == noErr && settable.boolValue
+    }
+
+    /// Watch a device's master output volume. Fires on the main queue whenever
+    /// anything changes it, including the keyboard volume keys.
+    static func observeOutputVolume(_ id: AudioObjectID,
+                                    handler: @escaping () -> Void) -> AudioObjectPropertyListenerBlock? {
+        var address = CA.addr(kAudioDevicePropertyVolumeScalar,
+                              scope: kAudioDevicePropertyScopeOutput,
+                              element: 0)
+        guard AudioObjectHasProperty(id, &address) else { return nil }
+        let block: AudioObjectPropertyListenerBlock = { _, _ in handler() }
+        guard AudioObjectAddPropertyListenerBlock(id, &address, DispatchQueue.main, block) == noErr else {
+            return nil
+        }
+        return block
+    }
+
+    static func stopObservingOutputVolume(_ id: AudioObjectID,
+                                          block: @escaping AudioObjectPropertyListenerBlock) {
+        var address = CA.addr(kAudioDevicePropertyVolumeScalar,
+                              scope: kAudioDevicePropertyScopeOutput,
+                              element: 0)
+        AudioObjectRemovePropertyListenerBlock(id, &address, DispatchQueue.main, block)
+    }
+
     static func supportedSampleRates(_ id: AudioObjectID) -> [ClosedRange<Double>] {
         CA.array(id, CA.addr(kAudioDevicePropertyAvailableNominalSampleRates), of: AudioValueRange.self)
             .map { $0.mMinimum...$0.mMaximum }

@@ -73,16 +73,21 @@ the original values on quit, leaving its own faders as the only attenuation.
 
 **The macOS volume slider moves to the wrong end of the chain.** Once system
 output points at BlackHole, that slider stops being the last stage before the
-speakers and becomes the first stage before the mixer. It attenuates digitally
-ahead of all summing, which costs level and resolution, and it is invisible from
-inside the app: every fader can read unity while the output is 5 dB down.
+speakers and becomes the first stage before the mixer, attenuating digitally
+before anything is summed.
 
-The app detects this and shows how much is being lost, with a **Pin to unity**
-switch that holds the loopback device at 1.0 so the app's faders are the only
-gain stage. It is opt-in because engaging it raises the output level, and the
-original value is restored on quit.
+Rather than fight that, the System strip's fader *is* that control. It reads and
+writes the loopback device's volume directly, so the strip, the macOS slider and
+the keyboard volume keys are all the same value and can never disagree. A
+CoreAudio property listener keeps the fader in sync when the volume changes from
+outside the app. The System source's gain inside the mixer stays pinned at unity,
+so there is exactly one gain stage rather than two.
 
-With it on, the keyboard volume keys stop having an effect while the app runs.
+One consequence worth knowing: BlackHole maps its slider linearly onto a
+-64...0 dB range, which is a far steeper taper than most hardware. Half travel is
+-32 dB, not the -10 dB or so you might expect. Keep the system volume high and
+trim with the output pair faders; that is better gain structure anyway, since it
+avoids throwing away resolution before the mix.
 
 > Restore-on-quit only runs on a graceful quit. If the app is force-quit or
 > crashes, the borrowed volume controls stay at unity until the next clean exit.

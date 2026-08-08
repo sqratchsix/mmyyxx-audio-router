@@ -24,7 +24,7 @@ struct ChannelStrip: View {
                     LevelMeter(displayDB: leftMeter.displayDB, holdDB: leftMeter.holdDB)
                     LevelMeter(displayDB: rightMeter.displayDB, holdDB: rightMeter.holdDB)
                 }
-                Fader(dB: $settings.gainDB)
+                Fader(position: $settings.gainDB.faderTravel)
             }
             .frame(height: 172)
 

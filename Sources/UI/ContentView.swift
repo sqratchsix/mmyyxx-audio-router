@@ -7,7 +7,6 @@ struct ContentView: View {
         VStack(spacing: 12) {
             header
             sourceBar
-            upstreamGainBar
             statusCard
 
             HStack(alignment: .top, spacing: 14) {
@@ -48,7 +47,10 @@ struct ContentView: View {
                             leftMeter: model.sourceMeters[index * 2],
                             rightMeter: model.sourceMeters[index * 2 + 1],
                             settings: $model.sourceSettings[index],
-                            pairLabels: model.pairChannels
+                            pairLabels: model.pairChannels,
+                            externalTravel: model.isSystemStrip(source) ? model.systemVolumeTravel : nil,
+                            externalReadout: model.isSystemStrip(source) ? model.systemVolumeReadout : nil,
+                            externalIsSilent: model.isSystemStrip(source) && model.systemVolume <= 0.0001
                         )
                     }
                 }
@@ -168,42 +170,6 @@ struct ContentView: View {
         .padding(.horizontal, 11)
         .padding(.vertical, 8)
         .background(WellBackground(cornerRadius: 7))
-    }
-
-    /// Once system output points at the loopback device, the macOS volume slider
-    /// attenuates ahead of the mixer instead of after it. That is invisible from
-    /// inside the app unless it is said out loud.
-    @ViewBuilder
-    private var upstreamGainBar: some View {
-        if let attenuation = model.upstreamAttenuationDB, model.systemAudioIsRouted {
-            HStack(spacing: 8) {
-                Image(systemName: "speaker.wave.1.fill")
-                    .font(.system(size: 10))
-                    .foregroundStyle(Theme.meterAmber)
-                Text(String(format: "macOS volume is cutting %.1f dB before the mixer", attenuation))
-                    .font(Theme.label(10))
-                    .foregroundStyle(Theme.textSecondary)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.8)
-                Spacer(minLength: 4)
-                Toggle("Pin to unity", isOn: $model.pinLoopbackVolume)
-                    .toggleStyle(.switch)
-                    .controlSize(.mini)
-                    .font(Theme.label(9, weight: .semibold))
-                    .foregroundStyle(Theme.textSecondary)
-                    .fixedSize()
-            }
-            .padding(.horizontal, 11)
-            .padding(.vertical, 7)
-            .background(
-                RoundedRectangle(cornerRadius: 7, style: .continuous)
-                    .fill(Theme.meterAmber.opacity(0.10))
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: 7, style: .continuous)
-                    .strokeBorder(Theme.meterAmber.opacity(0.35), lineWidth: 1)
-            )
-        }
     }
 
     @ViewBuilder
