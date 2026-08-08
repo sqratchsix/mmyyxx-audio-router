@@ -7,6 +7,10 @@ struct LevelMeter: View {
     let displayDB: Float
     let holdDB: Float
     var width: CGFloat = 9
+    /// False when the channel is muted or fully down. Source meters are
+    /// pre-fader, so without this a muted channel with signal on it looks
+    /// exactly like one that is feeding the outputs.
+    var isPassing: Bool = true
 
     /// Colour ramp keyed to dB rather than to bar height, so the amber and red
     /// zones sit at the same levels no matter how tall the meter is drawn.
@@ -19,8 +23,14 @@ struct LevelMeter: View {
         (6,   Theme.meterRed),
     ]
 
+    /// Blocked channels meter in flat grey: the signal is still visible, but it
+    /// reads at a glance as "arriving, not leaving".
+    private static let blockedRamp: [(dB: Float, color: Color)] = [
+        (-60, Color(white: 0.42)), (6, Color(white: 0.52)),
+    ]
+
     private var gradient: Gradient {
-        Gradient(stops: Self.ramp.map {
+        Gradient(stops: (isPassing ? Self.ramp : Self.blockedRamp).map {
             .init(color: $0.color, location: LevelMath.meterPosition(forDB: $0.dB))
         })
     }
@@ -59,9 +69,12 @@ struct LevelMeter: View {
                 let y = size.height - size.height * hold
                 var tickContext = context
                 tickContext.clip(to: track)
+                let tickColor: Color = isPassing
+                    ? (holdDB >= -1 ? Theme.meterRed : Color.white.opacity(0.85))
+                    : Color.white.opacity(0.35)
                 tickContext.fill(
                     Path(CGRect(x: 0, y: max(0, y - 1), width: size.width, height: 2)),
-                    with: .color(holdDB >= -1 ? Theme.meterRed : Color.white.opacity(0.85))
+                    with: .color(tickColor)
                 )
             }
         }

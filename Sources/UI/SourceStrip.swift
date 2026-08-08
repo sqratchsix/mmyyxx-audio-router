@@ -11,6 +11,14 @@ struct SourceStrip: View {
 
     private var muted: Bool { settings.muted }
 
+    /// Whether this source actually reaches an output right now. All three of
+    /// these block it, and each one is easy to leave set by accident.
+    private var isPassing: Bool {
+        !settings.muted
+            && settings.gainDB > LevelMath.silenceDB
+            && settings.sends.contains(true)
+    }
+
     var body: some View {
         VStack(spacing: 8) {
             header
@@ -18,9 +26,10 @@ struct SourceStrip: View {
             HStack(alignment: .center, spacing: 5) {
                 HStack(spacing: 3) {
                     LevelMeter(displayDB: leftMeter.displayDB, holdDB: leftMeter.holdDB,
-                               width: source.isStereo ? 8 : 11)
+                               width: source.isStereo ? 8 : 11, isPassing: isPassing)
                     if source.isStereo {
-                        LevelMeter(displayDB: rightMeter.displayDB, holdDB: rightMeter.holdDB, width: 8)
+                        LevelMeter(displayDB: rightMeter.displayDB, holdDB: rightMeter.holdDB,
+                                   width: 8, isPassing: isPassing)
                     }
                 }
                 Fader(dB: $settings.gainDB)
@@ -79,16 +88,27 @@ struct SourceStrip: View {
         .background(PanelBackground())
     }
 
+    /// When a source is blocked, the subtitle says why instead of repeating the
+    /// device name. Signal on a pre-fader meter that goes nowhere is the single
+    /// most confusing state this app can be in.
+    private var blockedReason: String? {
+        if settings.muted { return "MUTED" }
+        if settings.gainDB <= LevelMath.silenceDB { return "FADER DOWN" }
+        if !settings.sends.contains(true) { return "NO SEND" }
+        return nil
+    }
+
     private var header: some View {
         VStack(spacing: 1) {
             Text(source.name)
                 .font(Theme.label(11, weight: .bold))
-                .foregroundStyle(muted ? Theme.textTertiary : Theme.textPrimary)
+                .foregroundStyle(isPassing ? Theme.textPrimary : Theme.textTertiary)
                 .lineLimit(1)
                 .minimumScaleFactor(0.7)
-            Text(source.detail)
-                .font(Theme.label(7))
-                .foregroundStyle(Theme.textTertiary)
+            Text(blockedReason ?? source.detail)
+                .font(Theme.label(7, weight: blockedReason == nil ? .medium : .bold))
+                .tracking(blockedReason == nil ? 0 : 0.5)
+                .foregroundStyle(blockedReason == nil ? Theme.textTertiary : Theme.meterAmber)
                 .lineLimit(1)
                 .minimumScaleFactor(0.7)
         }
