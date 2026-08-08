@@ -9,6 +9,25 @@ struct SourceSettings: Codable, Equatable {
     var muted: Bool
     var sends: [Bool]
 
+    init(gainDB: Float, pan: Float, muted: Bool, sends: [Bool]) {
+        self.gainDB = gainDB
+        self.pan = pan
+        self.muted = muted
+        self.sends = sends
+    }
+
+    // Swift's synthesized decoder fails outright on a missing key, which would
+    // turn "this file predates a new field" into "reset the user's whole mix".
+    // Decoding every field optionally keeps old documents readable.
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        gainDB = try container.decodeIfPresent(Float.self, forKey: .gainDB) ?? 0
+        pan = try container.decodeIfPresent(Float.self, forKey: .pan) ?? 0
+        muted = try container.decodeIfPresent(Bool.self, forKey: .muted) ?? false
+        sends = try container.decodeIfPresent([Bool].self, forKey: .sends)
+            ?? Array(repeating: true, count: SharedState.pairCount)
+    }
+
     /// Hardware inputs arrive silent and muted: plugging in a live microphone
     /// should never come up hot through the monitors. System audio is the one
     /// source the user is asking for by launching the app, so it starts open.
@@ -44,6 +63,17 @@ struct PairSettings: Codable, Equatable {
     var gainDB: Float = 0
     var muted: Bool = false
 
+    init(gainDB: Float = 0, muted: Bool = false) {
+        self.gainDB = gainDB
+        self.muted = muted
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        gainDB = try container.decodeIfPresent(Float.self, forKey: .gainDB) ?? 0
+        muted = try container.decodeIfPresent(Bool.self, forKey: .muted) ?? false
+    }
+
     func normalized() -> PairSettings {
         PairSettings(gainDB: min(max(gainDB.isFinite ? gainDB : 0, LevelMath.silenceDB), 6),
                      muted: muted)
@@ -58,6 +88,29 @@ struct PersistedSettings: Codable {
     /// Keyed by `MixerSource.id`, which is stable across relaunches and across
     /// device rescans, so a strip keeps its level when the source list is rebuilt.
     var sources: [String: SourceSettings] = [:]
+    /// Hold the loopback device at unity so the macOS volume slider cannot
+    /// attenuate ahead of the mixer.
+    var pinLoopbackVolume = false
+
+    init(selectedOutputUID: String? = nil,
+         pairs: [PairSettings] = Array(repeating: PairSettings(), count: SharedState.pairCount),
+         sources: [String: SourceSettings] = [:],
+         pinLoopbackVolume: Bool = false) {
+        self.selectedOutputUID = selectedOutputUID
+        self.pairs = pairs
+        self.sources = sources
+        self.pinLoopbackVolume = pinLoopbackVolume
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        version = try container.decodeIfPresent(Int.self, forKey: .version) ?? 1
+        selectedOutputUID = try container.decodeIfPresent(String.self, forKey: .selectedOutputUID)
+        pairs = try container.decodeIfPresent([PairSettings].self, forKey: .pairs)
+            ?? Array(repeating: PairSettings(), count: SharedState.pairCount)
+        sources = try container.decodeIfPresent([String: SourceSettings].self, forKey: .sources) ?? [:]
+        pinLoopbackVolume = try container.decodeIfPresent(Bool.self, forKey: .pinLoopbackVolume) ?? false
+    }
 
     func normalized() -> PersistedSettings {
         var copy = self

@@ -71,8 +71,21 @@ control and 3–4 do not, so the two pairs can sit 30 dB apart with no visible
 cause. On start the app forces every settable output volume to unity and restores
 the original values on quit, leaving its own faders as the only attenuation.
 
-A side effect: while the app runs, the keyboard volume keys drive BlackHole,
-which sits upstream of the mixer and moves both pairs together.
+**The macOS volume slider moves to the wrong end of the chain.** Once system
+output points at BlackHole, that slider stops being the last stage before the
+speakers and becomes the first stage before the mixer. It attenuates digitally
+ahead of all summing, which costs level and resolution, and it is invisible from
+inside the app: every fader can read unity while the output is 5 dB down.
+
+The app detects this and shows how much is being lost, with a **Pin to unity**
+switch that holds the loopback device at 1.0 so the app's faders are the only
+gain stage. It is opt-in because engaging it raises the output level, and the
+original value is restored on quit.
+
+With it on, the keyboard volume keys stop having an effect while the app runs.
+
+> Restore-on-quit only runs on a graceful quit. If the app is force-quit or
+> crashes, the borrowed volume controls stay at unity until the next clean exit.
 
 ## Requirements
 

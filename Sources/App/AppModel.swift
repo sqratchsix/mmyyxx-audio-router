@@ -53,6 +53,24 @@ final class AppModel: ObservableObject {
     @Published private(set) var meters: [MeterBallistics] = Array(repeating: MeterBallistics(),
                                                                   count: SharedState.outputChannelCount)
 
+    /// Live master volume of the loopback device, which is what the macOS volume
+    /// slider now drives. Anything below unity attenuates ahead of the mixer.
+    @Published private(set) var loopbackVolume: Float = 1
+    @Published var pinLoopbackVolume = false {
+        didSet {
+            guard !isDiscovering, oldValue != pinLoopbackVolume else { return }
+            scheduleSave()
+            // The claim happens at engine start, alongside the output volumes,
+            // so restore-on-quit goes through one code path.
+            restartEngine()
+        }
+    }
+
+    var upstreamAttenuationDB: Float? {
+        guard loopbackVolume < 0.999, loopbackVolume > 0 else { return nil }
+        return 20 * log10(loopbackVolume)
+    }
+
     var selectedOutput: AudioDeviceInfo? {
         outputCandidates.first { $0.uid == selectedOutputUID }
     }
@@ -117,7 +135,8 @@ final class AppModel: ObservableObject {
         let persisted = store.load()
         storedSourceSettings = persisted.sources
         pairSettings = persisted.pairs
-        isDiscovering = true              // suppress the restart in `didSet`
+        isDiscovering = true              // suppress the restarts in `didSet`
+        pinLoopbackVolume = persisted.pinLoopbackVolume
         selectedOutputUID = persisted.selectedOutputUID
         isDiscovering = false
         hasLoaded = true
@@ -148,7 +167,8 @@ final class AppModel: ObservableObject {
         storedSourceSettings = merged
         store.save(PersistedSettings(selectedOutputUID: selectedOutputUID,
                                      pairs: pairSettings,
-                                     sources: merged))
+                                     sources: merged,
+                                     pinLoopbackVolume: pinLoopbackVolume))
     }
 
     func resetSettings() {
@@ -239,7 +259,8 @@ final class AppModel: ObservableObject {
             return
         }
 
-        engine.start(output: output, loopback: loopback, sources: sources)
+        engine.start(output: output, loopback: loopback, sources: sources,
+                     pinLoopbackVolume: pinLoopbackVolume)
 
         switch engine.state {
         case .running(let rate, let frames):
@@ -329,6 +350,10 @@ final class AppModel: ObservableObject {
             slowTickCounter = 0
             let current = AudioDevices.systemDefaultOutput()
             if current?.uid != systemOutput?.uid { systemOutput = current }
+            if let loopback, let volume = AudioDevices.outputVolume(loopback.id, channel: 0),
+               abs(volume - loopbackVolume) > 0.001 {
+                loopbackVolume = volume
+            }
             if loopback == nil || outputCandidates.isEmpty { refreshDevices() }
         }
     }
