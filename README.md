@@ -126,6 +126,27 @@ surprises anyone through the speakers. Unmute and raise the fader to use one.
 | MUTE | Per source and per output pair. |
 | CLIP | Latches while a pair's post-fader peak hold sits at 0 dBFS. |
 
+## Settings
+
+Every fader, pan, mute and send is persisted to:
+
+```
+~/Library/Application Support/com.jaredsimon.mmyyxx/settings.json
+```
+
+Sources are keyed by a stable id (`system`, or `<device-uid>#<channel>`) rather
+than by position, so unplugging an interface and reconnecting it restores that
+strip's mix instead of resetting it. Settings for absent devices are kept in the
+file rather than pruned.
+
+Writes are debounced by 0.75 s, because a fader drag emits a change per frame and
+each one would otherwise be a file write. Writes are atomic, so a crash mid-save
+leaves the previous file intact rather than a truncated one. Anything loaded from
+disk is range-checked before it reaches the render path, so a hand-edited or
+stale file cannot crash the engine.
+
+The device menu has **Reset mix to defaults** and **Reveal settings file**.
+
 ## Layout
 
 ```
@@ -143,5 +164,9 @@ with gain, pan, mute and per-pair sends; two output pairs with master faders,
 mutes and clip indicators; peak metering with hold throughout; device selection;
 system-output routing with restore on quit.
 
-Not done yet: no settings persistence, so the mix resets on each launch. Buffer
-size is whatever the aggregate negotiates rather than something the app sets.
+Also working: the full mix persists across launches and across device
+reconnects.
+
+Not done yet: buffer size is whatever the aggregate negotiates rather than
+something the app sets. There is no menu bar item, so the window is the only
+way to reach the controls.

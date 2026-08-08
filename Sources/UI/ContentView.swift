@@ -39,19 +39,14 @@ struct ContentView: View {
             sectionLabel("SOURCES")
             HStack(alignment: .top, spacing: 7) {
                 ForEach(Array(model.sources.enumerated()), id: \.element.id) { index, source in
-                    // SwiftUI can render mid-rebuild, so every parallel array
-                    // has to be long enough before any of them is subscripted.
-                    if index < model.sourceGainDB.count, index < model.sourcePan.count,
-                       index < model.sourceMuted.count, index < model.sourceSends.count,
-                       index * 2 + 1 < model.sourceMeters.count {
+                    // SwiftUI can render between the source list and the meter
+                    // array being resized, so both still need a bounds check.
+                    if index < model.sourceSettings.count, index * 2 + 1 < model.sourceMeters.count {
                         SourceStrip(
                             source: source,
                             leftMeter: model.sourceMeters[index * 2],
                             rightMeter: model.sourceMeters[index * 2 + 1],
-                            gainDB: $model.sourceGainDB[index],
-                            pan: $model.sourcePan[index],
-                            muted: $model.sourceMuted[index],
-                            sends: $model.sourceSends[index],
+                            settings: $model.sourceSettings[index],
                             pairLabels: model.pairChannels
                         )
                     }
@@ -65,14 +60,15 @@ struct ContentView: View {
             sectionLabel("OUTPUTS")
             HStack(alignment: .top, spacing: 7) {
                 ForEach(0..<SharedState.pairCount, id: \.self) { pair in
-                    ChannelStrip(
-                        title: model.pairNames[pair],
-                        channels: model.pairChannels[pair],
-                        leftMeter: model.meters[pair * 2],
-                        rightMeter: model.meters[pair * 2 + 1],
-                        gainDB: $model.pairGainDB[pair],
-                        muted: $model.pairMuted[pair]
-                    )
+                    if pair < model.pairSettings.count {
+                        ChannelStrip(
+                            title: model.pairNames[pair],
+                            channels: model.pairChannels[pair],
+                            leftMeter: model.meters[pair * 2],
+                            rightMeter: model.meters[pair * 2 + 1],
+                            settings: $model.pairSettings[pair]
+                        )
+                    }
                 }
             }
         }
@@ -118,6 +114,10 @@ struct ContentView: View {
             }
             Divider()
             Button("Rescan devices") { model.refreshDevices() }
+            Button("Reset mix to defaults") { model.resetSettings() }
+            Button("Reveal settings file") {
+                NSWorkspace.shared.activateFileViewerSelecting([model.settingsLocation])
+            }
         } label: {
             HStack(spacing: 5) {
                 Image(systemName: "hifispeaker.2.fill").font(.system(size: 10))

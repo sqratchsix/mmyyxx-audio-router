@@ -20,6 +20,7 @@ final class AppModel: ObservableObject {
     @Published var selectedOutputUID: String? {
         didSet {
             guard !isDiscovering, oldValue != selectedOutputUID else { return }
+            scheduleSave()
             restartEngine()
         }
     }
@@ -29,19 +30,26 @@ final class AppModel: ObservableObject {
     @Published private(set) var sampleRate: Double = 0
     @Published private(set) var bufferFrames: Int = 0
 
-    // Sources
+    // Sources. One settings value per source, index-aligned with `sources`.
     @Published private(set) var sources: [MixerSource] = []
-    @Published var sourceGainDB: [Float] = [] { didSet { pushSources() } }
-    @Published var sourcePan: [Float] = [] { didSet { pushSources() } }
-    @Published var sourceMuted: [Bool] = [] { didSet { pushSources() } }
-    /// `sourceSends[source][pair]`
-    @Published var sourceSends: [[Bool]] = [] { didSet { pushSources() } }
-    /// Two entries per source: left, right.
+    @Published var sourceSettings: [SourceSettings] = [] {
+        didSet {
+            guard !isRebuildingSources else { return }
+            pushSources()
+            scheduleSave()
+        }
+    }
+    /// Two entries per source: left, right. Display state, not persisted.
     @Published private(set) var sourceMeters: [MeterBallistics] = []
 
     // Output pairs
-    @Published var pairGainDB: [Float] = [0, 0] { didSet { pushPairs() } }
-    @Published var pairMuted: [Bool] = [false, false] { didSet { pushPairs() } }
+    @Published var pairSettings: [PairSettings] = Array(repeating: PairSettings(),
+                                                        count: SharedState.pairCount) {
+        didSet {
+            pushPairs()
+            scheduleSave()
+        }
+    }
     @Published private(set) var meters: [MeterBallistics] = Array(repeating: MeterBallistics(),
                                                                   count: SharedState.outputChannelCount)
 
@@ -63,23 +71,36 @@ final class AppModel: ObservableObject {
     let pairChannels = ["1–2", "3–4"]
 
     private let engine = RouterEngine()
+    private let store = SettingsStore()
     private var displayTimer: Timer?
+    private var saveTimer: Timer?
     private var lastTick = Date()
     private var slowTickCounter = 0
     private var previousSystemOutputUID: String?
     private var isDiscovering = false
     private var isRebuildingSources = false
+    private var hasLoaded = false
+    /// Settings for sources that are not currently present, kept so unplugging
+    /// and reconnecting an interface does not discard its mix.
+    private var storedSourceSettings: [String: SourceSettings] = [:]
 
     // MARK: - Lifecycle
 
     func onAppear() {
+        loadSettings()
         refreshDevices()
         previousSystemOutputUID = AudioDevices.systemDefaultOutput()?.uid
         startEngine()
         startDisplayTimer()
+        // Materialise the file on first run so it always exists to be inspected
+        // or hand-edited, and so a crash before the first fader move still
+        // leaves a valid document behind.
+        saveNow()
     }
 
     func onTerminate() {
+        saveTimer?.invalidate()
+        saveNow()
         engine.stop()
         displayTimer?.invalidate()
         // Leave the user's sound output the way we found it.
@@ -89,6 +110,55 @@ final class AppModel: ObservableObject {
             AudioDevices.setSystemDefaultOutput(device)
         }
     }
+
+    // MARK: - Persistence
+
+    private func loadSettings() {
+        let persisted = store.load()
+        storedSourceSettings = persisted.sources
+        pairSettings = persisted.pairs
+        isDiscovering = true              // suppress the restart in `didSet`
+        selectedOutputUID = persisted.selectedOutputUID
+        isDiscovering = false
+        hasLoaded = true
+        Diagnostics.log("settings loaded from \(store.location.path): "
+            + "\(persisted.sources.count) stored sources, "
+            + "pairs \(persisted.pairs.map { String(format: "%.1f%@", $0.gainDB, $0.muted ? "M" : "") })")
+    }
+
+    /// Faders emit a change per drag frame, so writing on every one would mean
+    /// hundreds of file writes per gesture. Coalesce into one write shortly after
+    /// the last change.
+    private func scheduleSave() {
+        guard hasLoaded else { return }
+        saveTimer?.invalidate()
+        let timer = Timer(timeInterval: 0.75, repeats: false) { [weak self] _ in
+            Task { @MainActor in self?.saveNow() }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        saveTimer = timer
+    }
+
+    private func saveNow() {
+        guard hasLoaded else { return }
+        var merged = storedSourceSettings
+        for (index, source) in sources.enumerated() where index < sourceSettings.count {
+            merged[source.id] = sourceSettings[index]
+        }
+        storedSourceSettings = merged
+        store.save(PersistedSettings(selectedOutputUID: selectedOutputUID,
+                                     pairs: pairSettings,
+                                     sources: merged))
+    }
+
+    func resetSettings() {
+        storedSourceSettings = [:]
+        pairSettings = Array(repeating: PairSettings(), count: SharedState.pairCount)
+        rebuildSources(preservingCurrent: false)
+        saveNow()
+    }
+
+    var settingsLocation: URL { store.location }
 
     // MARK: - Devices
 
@@ -117,41 +187,30 @@ final class AppModel: ObservableObject {
         }
     }
 
-    /// Rebuild the source list, preserving the fader and routing state of any
-    /// source that survives the change so a device rescan does not reset the mix.
-    private func rebuildSources() {
-        let previous = sources
-        let previousGain = sourceGainDB, previousPan = sourcePan
-        let previousMuted = sourceMuted, previousSends = sourceSends
+    /// Rebuild the source list. A source that survives keeps its live settings;
+    /// one that returns after being away is restored from disk; anything genuinely
+    /// new gets sensible defaults.
+    private func rebuildSources(preservingCurrent: Bool = true) {
+        let previousSources = sources
+        let previousSettings = sourceSettings
 
         let rebuilt = MixerSourceDiscovery.sources(loopbackDevice: loopback, interface: selectedOutput)
 
-        var gain: [Float] = [], pan: [Float] = [], muted: [Bool] = [], sends: [[Bool]] = []
-        for source in rebuilt {
-            if let index = previous.firstIndex(where: { $0.id == source.id }), index < previousGain.count {
-                gain.append(previousGain[index])
-                pan.append(previousPan[index])
-                muted.append(previousMuted[index])
-                sends.append(previousSends[index])
-            } else {
-                // New sources start silent except system audio, so plugging in a
-                // live microphone never surprises anyone through the speakers.
-                gain.append(source.id == "system" ? 0 : LevelMath.silenceDB)
-                pan.append(0)
-                muted.append(source.id != "system")
-                sends.append(Array(repeating: true, count: SharedState.pairCount))
+        let settings: [SourceSettings] = rebuilt.map { source in
+            if preservingCurrent,
+               let index = previousSources.firstIndex(where: { $0.id == source.id }),
+               index < previousSettings.count {
+                return previousSettings[index]
             }
+            if preservingCurrent, let stored = storedSourceSettings[source.id] {
+                return stored
+            }
+            return .standard(for: source)
         }
 
-        // The parallel arrays are only consistent with each other once all of
-        // them have been assigned, and every assignment fires a `didSet`. Hold
-        // the pushes off until the set is coherent.
         isRebuildingSources = true
         sources = rebuilt
-        sourceGainDB = gain
-        sourcePan = pan
-        sourceMuted = muted
-        sourceSends = sends
+        sourceSettings = settings
         sourceMeters = Array(repeating: MeterBallistics(), count: rebuilt.count * 2)
         isRebuildingSources = false
 
@@ -202,15 +261,12 @@ final class AppModel: ObservableObject {
     }
 
     private func pushSources() {
-        guard !isRebuildingSources else { return }
-        // Never trust the arrays to agree; a short read here is a crash.
-        let count = min(sources.count, SharedState.maxSources,
-                        sourceGainDB.count, sourcePan.count,
-                        sourceMuted.count, sourceSends.count)
+        let count = min(sources.count, sourceSettings.count, SharedState.maxSources)
         for index in 0..<count {
+            let settings = sourceSettings[index]
             let state = engine.shared.sources[index]
-            state.gain.value = LevelMath.linear(fromDB: sourceGainDB[index])
-            state.muted.value = sourceMuted[index]
+            state.gain.value = LevelMath.linear(fromDB: settings.gainDB)
+            state.muted.value = settings.muted
 
             // Stereo sources stay at unity on both sides; the pan law is for
             // placing a mono input, not for skewing an already-balanced pair.
@@ -218,21 +274,21 @@ final class AppModel: ObservableObject {
                 state.panLeft.value = 1
                 state.panRight.value = 1
             } else {
-                let coefficients = SharedState.panCoefficients(sourcePan[index])
+                let coefficients = SharedState.panCoefficients(settings.pan)
                 state.panLeft.value = coefficients.left
                 state.panRight.value = coefficients.right
             }
 
-            for pair in 0..<SharedState.pairCount {
-                state.sends[pair].value = sourceSends[index][pair]
+            for pair in 0..<min(SharedState.pairCount, settings.sends.count) {
+                state.sends[pair].value = settings.sends[pair]
             }
         }
     }
 
     private func pushPairs() {
-        for pair in 0..<SharedState.pairCount {
-            engine.shared.pairGain[pair].value = LevelMath.linear(fromDB: pairGainDB[pair])
-            engine.shared.pairMuted[pair].value = pairMuted[pair]
+        for pair in 0..<min(SharedState.pairCount, pairSettings.count) {
+            engine.shared.pairGain[pair].value = LevelMath.linear(fromDB: pairSettings[pair].gainDB)
+            engine.shared.pairMuted[pair].value = pairSettings[pair].muted
         }
     }
 

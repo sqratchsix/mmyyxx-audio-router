@@ -6,8 +6,9 @@ struct ChannelStrip: View {
     let channels: String
     let leftMeter: MeterBallistics
     let rightMeter: MeterBallistics
-    @Binding var gainDB: Float
-    @Binding var muted: Bool
+    @Binding var settings: PairSettings
+
+    private var muted: Bool { settings.muted }
 
     private var isClipping: Bool {
         leftMeter.holdDB >= -0.1 || rightMeter.holdDB >= -0.1
@@ -23,11 +24,11 @@ struct ChannelStrip: View {
                     LevelMeter(displayDB: leftMeter.displayDB, holdDB: leftMeter.holdDB)
                     LevelMeter(displayDB: rightMeter.displayDB, holdDB: rightMeter.holdDB)
                 }
-                Fader(dB: $gainDB)
+                Fader(dB: $settings.gainDB)
             }
             .frame(height: 172)
 
-            Text(LevelMath.format(dB: gainDB))
+            Text(LevelMath.format(dB: settings.gainDB))
                 .font(Theme.numeric(11))
                 .foregroundStyle(muted ? Theme.textTertiary : Theme.textPrimary)
                 .frame(maxWidth: .infinity)
@@ -42,7 +43,7 @@ struct ChannelStrip: View {
 
             clipIndicator
 
-            Button { muted.toggle() } label: {
+            Button { settings.muted.toggle() } label: {
                 Text("MUTE")
                     .font(Theme.label(8, weight: .bold))
                     .tracking(0.5)

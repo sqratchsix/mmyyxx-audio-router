@@ -6,11 +6,10 @@ struct SourceStrip: View {
     let source: MixerSource
     let leftMeter: MeterBallistics
     let rightMeter: MeterBallistics
-    @Binding var gainDB: Float
-    @Binding var pan: Float
-    @Binding var muted: Bool
-    @Binding var sends: [Bool]
+    @Binding var settings: SourceSettings
     let pairLabels: [String]
+
+    private var muted: Bool { settings.muted }
 
     var body: some View {
         VStack(spacing: 8) {
@@ -24,11 +23,11 @@ struct SourceStrip: View {
                         LevelMeter(displayDB: rightMeter.displayDB, holdDB: rightMeter.holdDB, width: 8)
                     }
                 }
-                Fader(dB: $gainDB)
+                Fader(dB: $settings.gainDB)
             }
             .frame(height: 172)
 
-            Text(LevelMath.format(dB: gainDB))
+            Text(LevelMath.format(dB: settings.gainDB))
                 .font(Theme.numeric(10))
                 .foregroundStyle(muted ? Theme.textTertiary : Theme.textPrimary)
                 .frame(maxWidth: .infinity)
@@ -43,11 +42,11 @@ struct SourceStrip: View {
                     .foregroundStyle(Theme.textTertiary)
                     .frame(height: 16)
             } else {
-                PanSlider(pan: $pan)
+                PanSlider(pan: $settings.pan)
                     .frame(height: 16)
             }
 
-            Button { muted.toggle() } label: {
+            Button { settings.muted.toggle() } label: {
                 Text("MUTE")
                     .font(Theme.label(8, weight: .bold))
                     .tracking(0.5)
@@ -62,14 +61,14 @@ struct SourceStrip: View {
                     .tracking(0.7)
                     .foregroundStyle(Theme.textTertiary)
                 HStack(spacing: 3) {
-                    ForEach(0..<min(sends.count, pairLabels.count), id: \.self) { pair in
-                        Button { sends[pair].toggle() } label: {
+                    ForEach(0..<min(settings.sends.count, pairLabels.count), id: \.self) { pair in
+                        Button { settings.sends[pair].toggle() } label: {
                             Text(pairLabels[pair])
                                 .font(Theme.numeric(8, weight: .bold))
                                 .frame(maxWidth: .infinity)
                                 .padding(.vertical, 3)
                         }
-                        .buttonStyle(ToggleChipStyle(isOn: sends[pair], tint: Theme.accent))
+                        .buttonStyle(ToggleChipStyle(isOn: settings.sends[pair], tint: Theme.accent))
                     }
                 }
             }
