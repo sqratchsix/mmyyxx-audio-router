@@ -75,13 +75,34 @@ final class AppModel: ObservableObject {
         systemVolumeIsLinked && source.id == "system"
     }
 
-    /// The driver's reported level. BlackHole maps its slider linearly onto a
-    /// -64...0 dB range, so this is read from the device rather than derived.
+    /// Level the System strip actually delivers, using a cubic taper.
+    ///
+    /// BlackHole's own curve is linear across -64...0 dB, so each of the macOS
+    /// volume key's fixed 1/16 steps is a flat 4 dB no matter where you are.
+    /// That is far coarser than any normal output device and is what makes the
+    /// volume keys feel steppy. A cubic curve puts about 1.7 dB in the first
+    /// step and opens up toward the bottom, which is how hardware behaves.
+    static func systemTaperDB(_ position: Float) -> Float {
+        guard position > 0.0001 else { return LevelMath.silenceDB }
+        return max(LevelMath.silenceDB, 60 * log10(position))
+    }
+
+    /// Gain the mixer applies to turn BlackHole's attenuation into that curve.
+    ///
+    /// Derived from the dB the device reports rather than from an assumed
+    /// formula, so a driver with a different taper still lands on the same
+    /// curve. Compensation peaks around +14 dB near half travel and can never
+    /// push the result above the source's original level, so it cannot clip.
+    var systemCompensationDB: Float {
+        let desired = Self.systemTaperDB(systemVolume)
+        guard desired > LevelMath.silenceDB else { return LevelMath.silenceDB }
+        let applied = systemVolumeDB ?? (64 * (systemVolume - 1))
+        return min(max(desired - applied, -24), 24)
+    }
+
     var systemVolumeReadout: String {
-        if let dB = systemVolumeDB, dB.isFinite {
-            return systemVolume <= 0.0001 ? "−∞" : String(format: "%.0f", dB)
-        }
-        return "\(Int(systemVolume * 100))%"
+        let dB = Self.systemTaperDB(systemVolume)
+        return dB <= LevelMath.silenceDB ? "−∞" : String(format: "%.1f", dB)
     }
 
     func setSystemVolume(_ scalar: Float) {
@@ -89,6 +110,7 @@ final class AppModel: ObservableObject {
         systemVolume = scalar
         AudioDevices.setOutputVolume(loopback.id, channel: 0, scalar)
         systemVolumeDB = AudioDevices.outputVolumeDecibels(loopback.id)
+        pushSources()
     }
 
     private func readSystemVolume() {
@@ -97,6 +119,9 @@ final class AppModel: ObservableObject {
             systemVolume = scalar
         }
         systemVolumeDB = AudioDevices.outputVolumeDecibels(loopback.id)
+        // The compensation depends on where the device volume sits, so it has
+        // to be recomputed whenever anything moves it, keys included.
+        pushSources()
     }
 
     private func startSystemVolumeObserver() {
@@ -339,7 +364,7 @@ final class AppModel: ObservableObject {
             // already happened upstream. Applying the stored dB here as well
             // would be a second, invisible gain stage.
             state.gain.value = isSystemStrip(sources[index])
-                ? 1
+                ? LevelMath.linear(fromDB: systemCompensationDB)
                 : LevelMath.linear(fromDB: settings.gainDB)
             state.muted.value = settings.muted
 

@@ -83,11 +83,31 @@ CoreAudio property listener keeps the fader in sync when the volume changes from
 outside the app. The System source's gain inside the mixer stays pinned at unity,
 so there is exactly one gain stage rather than two.
 
-One consequence worth knowing: BlackHole maps its slider linearly onto a
--64...0 dB range, which is a far steeper taper than most hardware. Half travel is
--32 dB, not the -10 dB or so you might expect. Keep the system volume high and
-trim with the output pair faders; that is better gain structure anyway, since it
-avoids throwing away resolution before the mix.
+**BlackHole's volume taper is linear, and the mixer corrects for it.** Measured
+on the device, its curve is exactly `dB = 64 x (scalar - 1)`. Because the macOS
+volume keys always move in fixed 1/16 steps, that makes every key press a flat
+4 dB regardless of position, which is far coarser than any normal output device
+and is what makes the keys feel steppy.
+
+The mixer imposes a cubic taper instead, applying the difference between what
+the device reports it is doing and what the curve calls for:
+
+| Key step | BlackHole alone | With correction |
+|---|---|---|
+| 16/16 | 0.0 dB | 0.0 dB |
+| 15/16 | -4.0 dB | -1.7 dB |
+| 14/16 | -8.0 dB | -3.5 dB |
+| 12/16 | -16.0 dB | -7.5 dB |
+| 8/16 | -32.0 dB | -18.1 dB |
+| 4/16 | -36.1 dB | -36.1 dB |
+
+The correction is derived from the dB the device reports rather than from a
+hardcoded formula, so a loopback driver with a different curve lands on the same
+result. It peaks near +14 dB around half travel and can never raise the signal
+above its original level, so it cannot clip.
+
+Hold Option-Shift with the volume keys for quarter steps if you want finer
+control still.
 
 > Restore-on-quit only runs on a graceful quit. If the app is force-quit or
 > crashes, the borrowed volume controls stay at unity until the next clean exit.
