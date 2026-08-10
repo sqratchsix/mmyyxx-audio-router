@@ -144,8 +144,9 @@ struct PersistedSettings: Codable {
         }
         copy.pairs = pairs
         copy.sources = copy.sources.mapValues { $0.normalized() }
+        // An empty rack stays empty. The default reverb is for a document that
+        // has no chain key at all, not for one where every device was removed.
         copy.fxChain = Array(copy.fxChain.prefix(FXChainSnapshot.maxDevices)).map { $0.normalized() }
-        if copy.fxChain.isEmpty { copy.fxChain = [FXDeviceSettings(kind: .reverb)] }
         return copy
     }
 }

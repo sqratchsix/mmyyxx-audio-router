@@ -13,7 +13,7 @@ struct MmyyxxApp: App {
                 .onAppear { delegate.model = model }
                 .preferredColorScheme(.dark)
         }
-        .windowResizability(.contentSize)
+        .windowResizability(.contentMinSize)
         .commands {
             CommandGroup(replacing: .newItem) { }
         }

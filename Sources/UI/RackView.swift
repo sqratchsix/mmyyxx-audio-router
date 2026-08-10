@@ -22,7 +22,7 @@ struct RackView: View {
                     if !model.rackIsFull { emptyBay }
                 }
                 .padding(.vertical, Rack.deviceGap)
-                .frame(maxWidth: .infinity)
+                .frame(minWidth: Rack.minimumDeviceWidth, maxWidth: .infinity)
                 RackRail()
             }
             .background(Color.black.opacity(0.55))
@@ -32,6 +32,7 @@ struct RackView: View {
             RoundedRectangle(cornerRadius: 6, style: .continuous)
                 .strokeBorder(Color.black.opacity(0.8), lineWidth: 1)
         )
+        .fixedSize(horizontal: false, vertical: true)
         .shadow(color: .black.opacity(0.4), radius: 8, y: 3)
     }
 
@@ -137,13 +138,19 @@ struct RackEars<Content: View>: View {
     @State private var hovering = false
 
     var body: some View {
-        content()
-            .frame(height: Rack.unit * CGFloat(units))
-            .frame(maxWidth: .infinity)
-            .clipped()
-            .overlay(alignment: .topTrailing) { controls.opacity(hovering ? 1 : 0) }
-            .onHover { hovering = $0 }
-            .animation(.easeOut(duration: 0.12), value: hovering)
+        HStack(spacing: 0) {
+            RackEar()
+            content()
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            RackEar()
+        }
+        // Whole rack units, and never taller: a 1U device has to look 1U at any
+        // window size.
+        .frame(height: Rack.unit * CGFloat(units))
+        .clipped()
+        .overlay(alignment: .topTrailing) { controls.opacity(hovering ? 1 : 0) }
+        .onHover { hovering = $0 }
+        .animation(.easeOut(duration: 0.12), value: hovering)
     }
 
     private var controls: some View {
@@ -185,9 +192,7 @@ struct DelayDeviceView: View {
         RackEars(index: index, units: FXDeviceKind.delay.rackUnits,
                  title: "DL1", enabled: $device.enabled) {
             HStack(spacing: 0) {
-                RackScrewColumn()
-
-                HStack(spacing: 16) {
+                HStack(spacing: 14) {
                     VStack(alignment: .leading, spacing: 1) {
                         Text("DL1")
                             .font(.system(size: 14, weight: .black, design: .rounded))
@@ -245,8 +250,6 @@ struct DelayDeviceView: View {
                 }
                 .padding(.horizontal, 12)
                 .opacity(device.enabled ? 1 : 0.45)
-
-                RackScrewColumn()
             }
             .frame(maxHeight: .infinity)
             .background(
@@ -275,16 +278,25 @@ struct DelayDeviceView: View {
     }
 }
 
-/// The pair of screws that fasten a panel to the rails.
-struct RackScrewColumn: View {
+/// A device's mounting ear: runs the full height of the panel with a screw at
+/// the top and bottom, the way a rack device is actually fastened to the rails.
+struct RackEar: View {
     var body: some View {
-        VStack {
+        VStack(spacing: 0) {
             RackScrew()
             Spacer(minLength: 0)
             RackScrew()
         }
-        .padding(.vertical, 6)
-        .frame(width: 24)
+        .padding(.vertical, 7)
+        .frame(width: Rack.earWidth)
+        .frame(maxHeight: .infinity)
+        .background(
+            LinearGradient(colors: [Rack.panel, Rack.panelDark],
+                           startPoint: .top, endPoint: .bottom)
+        )
+        .overlay(alignment: .trailing) {
+            Rectangle().fill(Color.black.opacity(0.35)).frame(width: 1)
+        }
     }
 }
 

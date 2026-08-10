@@ -225,9 +225,7 @@ final class AppModel: ObservableObject {
         let persisted = store.load()
         storedSourceSettings = persisted.sources
         pairSettings = persisted.pairs
-        fxChain = persisted.fxChain.isEmpty
-            ? [FXDeviceSettings(kind: .reverb)]
-            : persisted.fxChain
+        fxChain = persisted.fxChain
         engine.fx.publish(FXChainSnapshot(fxChain))
         isDiscovering = true              // suppress the restarts in `didSet`
         selectedOutputUID = persisted.selectedOutputUID

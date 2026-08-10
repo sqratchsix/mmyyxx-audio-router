@@ -189,6 +189,11 @@ never stretch, so a 1U panel stays 1U at any window size.
 | RV7000 Advanced Reverb | 3U | main panel plus Remote Programmer |
 | DL1 Delay Line | 1U | stereo delay, damped feedback, ping-pong |
 
+Each device is fastened by full-height mounting ears with a screw top and bottom,
+and the rack is exactly as tall as what is mounted in it. The window's minimum
+width is the rack's, because a 19-inch rack that has to squeeze is not a 19-inch
+rack; below that the window scrolls rather than clipping.
+
 Hover a device for its power, reorder and remove controls. Each slot owns both a
 reverb and a delay from the moment the app starts: adding a device at runtime
 must never make the audio thread allocate a delay line, so the units are pooled

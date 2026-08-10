@@ -4,6 +4,19 @@ struct ContentView: View {
     @EnvironmentObject private var model: AppModel
 
     var body: some View {
+        ScrollView([.vertical, .horizontal]) {
+            content
+        }
+        .frame(minWidth: Rack.minimumWidth + 28, minHeight: 460)
+        .background(
+            LinearGradient(colors: [Theme.windowTop, Theme.windowBottom],
+                           startPoint: .top, endPoint: .bottom)
+                .ignoresSafeArea()
+        )
+        .onAppear { model.onAppear() }
+    }
+
+    private var content: some View {
         VStack(spacing: 12) {
             header
             sourceBar
@@ -27,13 +40,7 @@ struct ContentView: View {
             footer
         }
         .padding(14)
-        .frame(minHeight: 470)
-        .background(
-            LinearGradient(colors: [Theme.windowTop, Theme.windowBottom],
-                           startPoint: .top, endPoint: .bottom)
-                .ignoresSafeArea()
-        )
-        .onAppear { model.onAppear() }
+        .frame(minWidth: Rack.minimumWidth, alignment: .leading)
     }
 
     // MARK: - Sections

@@ -18,7 +18,14 @@ enum Rack {
     /// a 1U panel has to look like a 1U panel at any window size.
     static let unit: CGFloat = 80
     static let railWidth: CGFloat = 15
+    static let earWidth: CGFloat = 22
     static let deviceGap: CGFloat = 3
+
+    /// Narrowest the rack can be drawn without its widest device (the RV7000)
+    /// clipping. The window uses this as its minimum, because a 19-inch rack
+    /// that has to squeeze is not a 19-inch rack.
+    static let minimumDeviceWidth: CGFloat = 700
+    static var minimumWidth: CGFloat { minimumDeviceWidth + (railWidth + earWidth) * 2 }
 
     static func mono(_ size: CGFloat, weight: Font.Weight = .semibold) -> Font {
         .system(size: size, weight: weight, design: .monospaced)
@@ -58,9 +65,7 @@ struct RV7000View: View {
 
     private var mainPanel: some View {
         HStack(spacing: 0) {
-            RackScrewColumn()
-
-            HStack(spacing: 14) {
+            HStack(spacing: 10) {
                 powerSection
                 divider
                 patchSection
@@ -74,8 +79,6 @@ struct RV7000View: View {
             }
             .padding(.horizontal, 10)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
-
-            RackScrewColumn()
         }
         .background(
             LinearGradient(colors: [Rack.panel, Rack.panelDark],
@@ -125,7 +128,7 @@ struct RV7000View: View {
                 .foregroundStyle(Color(white: 0.15))
                 .padding(.horizontal, 6)
                 .padding(.vertical, 2)
-                .frame(width: 132, alignment: .leading)
+                .frame(width: 118, alignment: .leading)
                 .background(Color(red: 0.93, green: 0.91, blue: 0.80))
                 .clipShape(RoundedRectangle(cornerRadius: 2))
 
@@ -136,7 +139,7 @@ struct RV7000View: View {
                     .shadow(color: Rack.screenInk.opacity(0.6), radius: 3)
                     .padding(.horizontal, 6)
                     .padding(.vertical, 3)
-                    .frame(width: 132, alignment: .leading)
+                    .frame(width: 118, alignment: .leading)
                     .background(Rack.screen)
                     .clipShape(RoundedRectangle(cornerRadius: 2))
 
@@ -211,7 +214,7 @@ struct RV7000View: View {
     }
 
     private var mainKnobs: some View {
-        HStack(spacing: 14) {
+        HStack(spacing: 10) {
             labelledKnob("Decay", spec: FXPages.right(.eq)[2], diameter: 28)
             labelledKnob("HF Damp", spec: FXPages.right(.gate)[0], diameter: 28)
             labelledKnob("Hi EQ", spec: FXPages.left(.eq)[3], diameter: 28)
@@ -240,7 +243,7 @@ struct RV7000View: View {
                 .font(Rack.mono(7))
                 .foregroundStyle(Rack.engraved.opacity(0.7))
         }
-        .frame(width: 58)
+        .frame(width: 52)
     }
 
     private var outputMeter: some View {
