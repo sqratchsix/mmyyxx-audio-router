@@ -36,8 +36,8 @@ struct ChannelStrip: View {
             ClipIndicator(meters: meters, pair: pair)
 
             VStack(spacing: 4) {
-                MiniSlider(label: "FX SEND", value: $settings.fxSend, tint: Rack.sendTint)
-                MiniSlider(label: "FX RET", value: $settings.fxReturn, tint: Theme.meterGreen)
+                MiniSlider(label: "FX SEND", value: $settings.fxSend, tint: Rack.sendTint, trackWidth: 88)
+                MiniSlider(label: "FX RET", value: $settings.fxReturn, tint: Theme.meterGreen, trackWidth: 88)
             }
 
             Button { settings.muted.toggle() } label: {

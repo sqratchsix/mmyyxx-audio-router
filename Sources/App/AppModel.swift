@@ -397,6 +397,8 @@ final class AppModel: ObservableObject {
             for pair in 0..<min(SharedState.pairCount, settings.sends.count) {
                 state.sends[pair].value = settings.sends[pair]
             }
+
+            engine.fx.sourceSend[index].value = settings.fxSend
         }
     }
 
