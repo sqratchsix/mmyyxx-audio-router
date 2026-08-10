@@ -276,6 +276,37 @@ final class AppModel: ObservableObject {
 
     var rackIsFull: Bool { fxChain.count >= FXChainSnapshot.maxDevices }
 
+    /// Bounds-checked binding into a collection that the view itself can shrink.
+    ///
+    /// `$model.fxChain[index]` crashes when a device removes itself: SwiftUI
+    /// still evaluates the binding for the old index during the same update, and
+    /// `Array` traps on the out-of-range read.
+    func deviceBinding(_ index: Int) -> Binding<FXDeviceSettings> {
+        Binding(
+            get: { self.fxChain.indices.contains(index) ? self.fxChain[index] : FXDeviceSettings() },
+            set: { if self.fxChain.indices.contains(index) { self.fxChain[index] = $0 } }
+        )
+    }
+
+    func sourceBinding(_ index: Int) -> Binding<SourceSettings> {
+        Binding(
+            get: {
+                self.sourceSettings.indices.contains(index)
+                    ? self.sourceSettings[index]
+                    : SourceSettings(gainDB: 0, pan: 0, muted: true,
+                                     sends: Array(repeating: true, count: SharedState.pairCount))
+            },
+            set: { if self.sourceSettings.indices.contains(index) { self.sourceSettings[index] = $0 } }
+        )
+    }
+
+    func pairBinding(_ index: Int) -> Binding<PairSettings> {
+        Binding(
+            get: { self.pairSettings.indices.contains(index) ? self.pairSettings[index] : PairSettings() },
+            set: { if self.pairSettings.indices.contains(index) { self.pairSettings[index] = $0 } }
+        )
+    }
+
     func addDevice(_ kind: FXDeviceKind) {
         guard !rackIsFull else { return }
         fxChain.append(FXDeviceSettings(kind: kind))

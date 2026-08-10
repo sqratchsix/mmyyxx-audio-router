@@ -40,7 +40,11 @@ enum FXDeviceKind: String, Codable, CaseIterable, Identifiable {
 
 /// One device mounted in the rack. Both parameter blocks are carried regardless
 /// of kind, so switching a slot's device type keeps whatever the other one had.
-struct FXDeviceSettings: Equatable, Codable {
+struct FXDeviceSettings: Equatable, Codable, Identifiable {
+    /// Stable across reorders and removals, so SwiftUI identifies a device by
+    /// which device it is rather than by where it currently sits. `UUID` is a
+    /// 16-byte value type, so the struct stays plain-old-data.
+    var id = UUID()
     var kind: FXDeviceKind = .reverb
     var enabled = true
     var reverb = FXParameters()
@@ -55,6 +59,7 @@ struct FXDeviceSettings: Equatable, Codable {
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decodeIfPresent(UUID.self, forKey: .id) ?? UUID()
         kind = try c.decodeIfPresent(FXDeviceKind.self, forKey: .kind) ?? .reverb
         enabled = try c.decodeIfPresent(Bool.self, forKey: .enabled) ?? true
         reverb = try c.decodeIfPresent(FXParameters.self, forKey: .reverb) ?? FXParameters()

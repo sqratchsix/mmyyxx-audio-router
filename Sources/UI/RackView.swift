@@ -14,10 +14,8 @@ struct RackView: View {
             HStack(spacing: 0) {
                 RackRail()
                 VStack(spacing: Rack.deviceGap) {
-                    ForEach(Array(model.fxChain.enumerated()), id: \.offset) { index, device in
-                        if index < model.fxChain.count {
-                            deviceView(index: index, kind: device.kind)
-                        }
+                    ForEach(Array(model.fxChain.enumerated()), id: \.element.id) { index, device in
+                        deviceView(index: index, kind: device.kind)
                     }
                     if !model.rackIsFull { emptyBay }
                 }
@@ -40,9 +38,9 @@ struct RackView: View {
     private func deviceView(index: Int, kind: FXDeviceKind) -> some View {
         switch kind {
         case .reverb:
-            RV7000View(device: $model.fxChain[index], index: index, meters: model.meterModel)
+            RV7000View(device: model.deviceBinding(index), index: index, meters: model.meterModel)
         case .delay:
-            DelayDeviceView(device: $model.fxChain[index], index: index)
+            DelayDeviceView(device: model.deviceBinding(index), index: index)
         }
     }
 

@@ -49,21 +49,19 @@ struct ContentView: View {
         VStack(alignment: .leading, spacing: 6) {
             sectionLabel("SOURCES")
             HStack(alignment: .top, spacing: 7) {
+                // The settings binding is bounds-checked, so no guard is needed
+                // here even while the source list is being rebuilt.
                 ForEach(Array(model.sources.enumerated()), id: \.element.id) { index, source in
-                    // SwiftUI can render between the source list and the meter
-                    // array being resized, so both still need a bounds check.
-                    if index < model.sourceSettings.count {
-                        SourceStrip(
-                            source: source,
-                            meters: model.meterModel,
-                            meterIndex: index,
-                            settings: $model.sourceSettings[index],
-                            pairLabels: model.pairChannels,
-                            externalTravel: model.isSystemStrip(source) ? model.systemVolumeTravel : nil,
-                            externalReadout: model.isSystemStrip(source) ? model.systemVolumeReadout : nil,
-                            externalIsSilent: model.isSystemStrip(source) && model.systemVolume <= 0.0001
-                        )
-                    }
+                    SourceStrip(
+                        source: source,
+                        meters: model.meterModel,
+                        meterIndex: index,
+                        settings: model.sourceBinding(index),
+                        pairLabels: model.pairChannels,
+                        externalTravel: model.isSystemStrip(source) ? model.systemVolumeTravel : nil,
+                        externalReadout: model.isSystemStrip(source) ? model.systemVolumeReadout : nil,
+                        externalIsSilent: model.isSystemStrip(source) && model.systemVolume <= 0.0001
+                    )
                 }
             }
         }
@@ -74,15 +72,13 @@ struct ContentView: View {
             sectionLabel("OUTPUTS")
             HStack(alignment: .top, spacing: 7) {
                 ForEach(0..<SharedState.pairCount, id: \.self) { pair in
-                    if pair < model.pairSettings.count {
-                        ChannelStrip(
-                            title: model.pairNames[pair],
-                            channels: model.pairChannels[pair],
-                            meters: model.meterModel,
-                            pair: pair,
-                            settings: $model.pairSettings[pair]
-                        )
-                    }
+                    ChannelStrip(
+                        title: model.pairNames[pair],
+                        channels: model.pairChannels[pair],
+                        meters: model.meterModel,
+                        pair: pair,
+                        settings: model.pairBinding(pair)
+                    )
                 }
             }
         }
