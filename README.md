@@ -41,13 +41,27 @@ In 1–4 at 0–3 and system audio at 8–9.
 
 ### Signal flow
 
-The render callback runs two passes:
+```
+sources ──(fx send, post-fader)──┐
+                                 ├──▶ FX bus ──▶ RV7000 ──▶ return ──┐
+pair bus ──(fx send)─────────────┘        (tapped pre-return)        │
+    │                                                                │
+    └────────────────────────────────┬───────────────────────────────┘
+                                     └──▶ pair fader ──▶ output
+```
+
+The render callback runs in passes:
 
 1. Each source applies its own smoothed gain and pan, meters itself **pre-fader**
    so a channel still shows signal with the fader down, and sums into whichever
-   output pairs its send buttons select.
-2. Each output pair applies its master fader and meters **post-fader**, so the
+   output pairs its send buttons select, plus the FX bus.
+2. Each output pair can also feed the FX bus. That tap happens **before** the
+   return is summed back in, which is what stops a pair that both sends to and
+   receives from the reverb from closing a feedback loop.
+3. Each output pair applies its master fader and meters **post-fader**, so the
    output strips show what is actually leaving the interface.
+
+FX sends default to zero, so nothing is heard until a send is raised.
 
 Gain smoothing advances once per frame regardless of how many pairs a source
 feeds, so slew rate does not depend on routing.
@@ -163,6 +177,47 @@ surprises anyone through the speakers. Unmute and raise the fader to use one.
 | SEND 1–2 / 3–4 | Which output pairs this source feeds. |
 | MUTE | Per source and per output pair. |
 | CLIP | Latches while a pair's post-fader peak hold sits at 0 dBFS. |
+
+## The effect
+
+A reverb modelled on Reason's RV7000: a main panel with the headline controls
+and a Remote Programmer below carrying the rest on a red LCD.
+
+Six of the algorithms are a feedback delay network — eight delay lines with
+mutually non-harmonic lengths, a four-stage allpass diffuser on the input, and a
+Householder feedback matrix. The matrix is orthogonal, so it redistributes energy
+between lines without adding or removing any; decay is set purely by the per-line
+feedback gains, which keeps RT60 predictable. Small Space through Arena differ by
+how far the delay set is stretched; Plate and Spring add diffusion density. Echo
+and Multi Tap bypass the network for a tap-based path, and Reverse plays
+crossfaded grains backwards into it.
+
+**Decay compensation.** The damping filters inside the feedback path shave a
+little off the midband on every pass, and at tens of passes per second that
+compounds. Measured with an impulse test, a 20 s Decay setting was decaying in
+about 3 s. The feedback gain is now divided by the filters' measured loss at
+500 Hz, so Decay means RT60 again while the top end still dies away first. An
+offline harness (`Tools/`-style, see the commit) sweeps every algorithm and the
+extremes looking for NaN or a tail that fails to decay.
+
+## Performance
+
+Metering is the only thing that runs continuously, and it needs care.
+
+The first working version idled at **98% of a core**. Profiling showed the cost
+was almost entirely SwiftUI *layout*, not drawing and not DSP: `AppModel` was one
+`ObservableObject`, so a meter tick invalidated the whole view tree and the engine
+re-solved `sizeThatFits` across every nested stack in the window. The reverb
+itself measured 0.2%.
+
+Three changes took it to roughly 13% visible and 0.5% hidden:
+
+- Metering moved into its own `MeterModel`, so only the leaf views that draw a
+  meter subscribe to it. Anything that merely passes it along holds it as a plain
+  `let`; making it `@ObservedObject` higher up brings the problem straight back.
+- Each meter group draws in a single fixed-size `Canvas` instead of a view per bar
+  and per scale tick. One layout node regardless of what is inside it.
+- 30 Hz instead of 60, and metering pauses entirely when the window is occluded.
 
 ## Settings
 

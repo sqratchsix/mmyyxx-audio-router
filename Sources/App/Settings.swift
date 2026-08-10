@@ -8,12 +8,15 @@ struct SourceSettings: Codable, Equatable {
     var pan: Float
     var muted: Bool
     var sends: [Bool]
+    /// Post-fader level into the FX bus, 0...1.
+    var fxSend: Float
 
-    init(gainDB: Float, pan: Float, muted: Bool, sends: [Bool]) {
+    init(gainDB: Float, pan: Float, muted: Bool, sends: [Bool], fxSend: Float = 0) {
         self.gainDB = gainDB
         self.pan = pan
         self.muted = muted
         self.sends = sends
+        self.fxSend = fxSend
     }
 
     // Swift's synthesized decoder fails outright on a missing key, which would
@@ -26,6 +29,7 @@ struct SourceSettings: Codable, Equatable {
         muted = try container.decodeIfPresent(Bool.self, forKey: .muted) ?? false
         sends = try container.decodeIfPresent([Bool].self, forKey: .sends)
             ?? Array(repeating: true, count: SharedState.pairCount)
+        fxSend = try container.decodeIfPresent(Float.self, forKey: .fxSend) ?? 0
     }
 
     /// Hardware inputs arrive silent and muted: plugging in a live microphone
@@ -47,6 +51,7 @@ struct SourceSettings: Codable, Equatable {
         var copy = self
         copy.gainDB = min(max(gainDB.isFinite ? gainDB : 0, LevelMath.silenceDB), 6)
         copy.pan = min(max(pan.isFinite ? pan : 0, -1), 1)
+        copy.fxSend = min(max(fxSend.isFinite ? fxSend : 0, 0), 1)
         if copy.sends.count != SharedState.pairCount {
             var fixed = Array(repeating: true, count: SharedState.pairCount)
             for index in 0..<min(copy.sends.count, SharedState.pairCount) {
@@ -62,21 +67,31 @@ struct SourceSettings: Codable, Equatable {
 struct PairSettings: Codable, Equatable {
     var gainDB: Float = 0
     var muted: Bool = false
+    /// Level of this pair's own bus into the FX, tapped before the return.
+    var fxSend: Float = 0
+    /// How much of the FX output comes back into this pair.
+    var fxReturn: Float = 1
 
-    init(gainDB: Float = 0, muted: Bool = false) {
+    init(gainDB: Float = 0, muted: Bool = false, fxSend: Float = 0, fxReturn: Float = 1) {
         self.gainDB = gainDB
         self.muted = muted
+        self.fxSend = fxSend
+        self.fxReturn = fxReturn
     }
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         gainDB = try container.decodeIfPresent(Float.self, forKey: .gainDB) ?? 0
         muted = try container.decodeIfPresent(Bool.self, forKey: .muted) ?? false
+        fxSend = try container.decodeIfPresent(Float.self, forKey: .fxSend) ?? 0
+        fxReturn = try container.decodeIfPresent(Float.self, forKey: .fxReturn) ?? 1
     }
 
     func normalized() -> PairSettings {
         PairSettings(gainDB: min(max(gainDB.isFinite ? gainDB : 0, LevelMath.silenceDB), 6),
-                     muted: muted)
+                     muted: muted,
+                     fxSend: min(max(fxSend.isFinite ? fxSend : 0, 0), 1),
+                     fxReturn: min(max(fxReturn.isFinite ? fxReturn : 1, 0), 1))
     }
 }
 
@@ -88,12 +103,16 @@ struct PersistedSettings: Codable {
     /// Keyed by `MixerSource.id`, which is stable across relaunches and across
     /// device rescans, so a strip keeps its level when the source list is rebuilt.
     var sources: [String: SourceSettings] = [:]
+    var fx = FXParameters()
+
     init(selectedOutputUID: String? = nil,
          pairs: [PairSettings] = Array(repeating: PairSettings(), count: SharedState.pairCount),
-         sources: [String: SourceSettings] = [:]) {
+         sources: [String: SourceSettings] = [:],
+         fx: FXParameters = FXParameters()) {
         self.selectedOutputUID = selectedOutputUID
         self.pairs = pairs
         self.sources = sources
+        self.fx = fx
     }
 
     init(from decoder: Decoder) throws {
@@ -103,6 +122,7 @@ struct PersistedSettings: Codable {
         pairs = try container.decodeIfPresent([PairSettings].self, forKey: .pairs)
             ?? Array(repeating: PairSettings(), count: SharedState.pairCount)
         sources = try container.decodeIfPresent([String: SourceSettings].self, forKey: .sources) ?? [:]
+        fx = try container.decodeIfPresent(FXParameters.self, forKey: .fx) ?? FXParameters()
     }
 
     func normalized() -> PersistedSettings {
@@ -113,6 +133,7 @@ struct PersistedSettings: Codable {
         }
         copy.pairs = pairs
         copy.sources = copy.sources.mapValues { $0.normalized() }
+        copy.fx = copy.fx.normalized()
         return copy
     }
 }

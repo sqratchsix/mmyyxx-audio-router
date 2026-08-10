@@ -4,8 +4,9 @@ import SwiftUI
 /// per output pair.
 struct SourceStrip: View {
     let source: MixerSource
-    let leftMeter: MeterBallistics
-    let rightMeter: MeterBallistics
+    /// Plain `let`, not `@ObservedObject`: only the meter leaf subscribes.
+    let meters: MeterModel
+    let meterIndex: Int
     @Binding var settings: SourceSettings
     let pairLabels: [String]
     /// When set, this strip's fader drives an external control instead of the
@@ -29,14 +30,8 @@ struct SourceStrip: View {
             header
 
             HStack(alignment: .center, spacing: 5) {
-                HStack(spacing: 3) {
-                    LevelMeter(displayDB: leftMeter.displayDB, holdDB: leftMeter.holdDB,
-                               width: source.isStereo ? 8 : 11, isPassing: isPassing)
-                    if source.isStereo {
-                        LevelMeter(displayDB: rightMeter.displayDB, holdDB: rightMeter.holdDB,
-                                   width: 8, isPassing: isPassing)
-                    }
-                }
+                SourceMeterPair(meters: meters, index: meterIndex,
+                                isStereo: source.isStereo, isPassing: isPassing)
                 if let externalTravel {
                     Fader(position: externalTravel, resetPosition: 1, unityMark: nil)
                 } else {
@@ -72,6 +67,8 @@ struct SourceStrip: View {
                     .padding(.vertical, 4)
             }
             .buttonStyle(ToggleChipStyle(isOn: muted, tint: Theme.danger))
+
+            MiniSlider(label: "FX", value: $settings.fxSend, tint: Rack.sendTint)
 
             VStack(spacing: 3) {
                 Text("SEND")

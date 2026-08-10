@@ -4,26 +4,18 @@ import SwiftUI
 struct ChannelStrip: View {
     let title: String
     let channels: String
-    let leftMeter: MeterBallistics
-    let rightMeter: MeterBallistics
+    let meters: MeterModel
+    let pair: Int
     @Binding var settings: PairSettings
 
     private var muted: Bool { settings.muted }
-
-    private var isClipping: Bool {
-        leftMeter.holdDB >= -0.1 || rightMeter.holdDB >= -0.1
-    }
 
     var body: some View {
         VStack(spacing: 8) {
             header
 
             HStack(alignment: .center, spacing: 6) {
-                MeterScale()
-                HStack(spacing: 3) {
-                    LevelMeter(displayDB: leftMeter.displayDB, holdDB: leftMeter.holdDB)
-                    LevelMeter(displayDB: rightMeter.displayDB, holdDB: rightMeter.holdDB)
-                }
+                OutputMeterPair(meters: meters, pair: pair)
                 Fader(position: $settings.gainDB.faderTravel)
             }
             .frame(height: 172)
@@ -41,7 +33,12 @@ struct ChannelStrip: View {
                         .padding(.trailing, 5)
                 }
 
-            clipIndicator
+            ClipIndicator(meters: meters, pair: pair)
+
+            VStack(spacing: 4) {
+                MiniSlider(label: "FX SEND", value: $settings.fxSend, tint: Rack.sendTint)
+                MiniSlider(label: "FX RET", value: $settings.fxReturn, tint: Theme.meterGreen)
+            }
 
             Button { settings.muted.toggle() } label: {
                 Text("MUTE")
@@ -73,23 +70,6 @@ struct ChannelStrip: View {
         .frame(height: 24)
     }
 
-    private var clipIndicator: some View {
-        Text("CLIP")
-            .font(Theme.label(8, weight: .bold))
-            .tracking(0.6)
-            .foregroundStyle(isClipping ? Color.white : Theme.textTertiary)
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, 3)
-            .background(
-                RoundedRectangle(cornerRadius: 4, style: .continuous)
-                    .fill(isClipping ? Theme.danger : Theme.well)
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: 4, style: .continuous)
-                    .strokeBorder(Theme.hairline, lineWidth: 1)
-            )
-            .animation(.easeOut(duration: 0.12), value: isClipping)
-    }
 }
 
 struct ToggleChipStyle: ButtonStyle {

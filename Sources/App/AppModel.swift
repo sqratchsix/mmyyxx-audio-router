@@ -1,6 +1,7 @@
 import Combine
 import CoreAudio
 import Foundation
+import AppKit
 import SwiftUI
 
 @MainActor
@@ -39,8 +40,6 @@ final class AppModel: ObservableObject {
             scheduleSave()
         }
     }
-    /// Two entries per source: left, right. Display state, not persisted.
-    @Published private(set) var sourceMeters: [MeterBallistics] = []
 
     // Output pairs
     @Published var pairSettings: [PairSettings] = Array(repeating: PairSettings(),
@@ -50,8 +49,20 @@ final class AppModel: ObservableObject {
             scheduleSave()
         }
     }
-    @Published private(set) var meters: [MeterBallistics] = Array(repeating: MeterBallistics(),
-                                                                  count: SharedState.outputChannelCount)
+    /// Held as a plain reference, never `@Published`: this object changes 60
+    /// times a second and must not invalidate anything above the meter leaves.
+    let meterModel = MeterModel()
+
+    // FX
+    @Published var fx = FXParameters() {
+        didSet {
+            guard oldValue != fx else { return }
+            engine.fx.publish(fx)
+            scheduleSave()
+        }
+    }
+    /// Which page the remote programmer is showing.
+    @Published var fxEditPage: FXEditPage = .reverb
 
     /// The loopback device's master volume, which is exactly what the macOS
     /// volume keys drive once system output points at it. The System strip's
@@ -212,6 +223,8 @@ final class AppModel: ObservableObject {
         let persisted = store.load()
         storedSourceSettings = persisted.sources
         pairSettings = persisted.pairs
+        fx = persisted.fx
+        engine.fx.publish(persisted.fx)
         isDiscovering = true              // suppress the restarts in `didSet`
         selectedOutputUID = persisted.selectedOutputUID
         isDiscovering = false
@@ -243,11 +256,13 @@ final class AppModel: ObservableObject {
         storedSourceSettings = merged
         store.save(PersistedSettings(selectedOutputUID: selectedOutputUID,
                                      pairs: pairSettings,
-                                     sources: merged))
+                                     sources: merged,
+                                     fx: fx))
     }
 
     func resetSettings() {
         storedSourceSettings = [:]
+        fx = FXParameters()
         pairSettings = Array(repeating: PairSettings(), count: SharedState.pairCount)
         rebuildSources(preservingCurrent: false)
         saveNow()
@@ -306,7 +321,7 @@ final class AppModel: ObservableObject {
         isRebuildingSources = true
         sources = rebuilt
         sourceSettings = settings
-        sourceMeters = Array(repeating: MeterBallistics(), count: rebuilt.count * 2)
+        meterModel.resizeSources(count: rebuilt.count)
         isRebuildingSources = false
 
         pushSources()
@@ -389,13 +404,35 @@ final class AppModel: ObservableObject {
         for pair in 0..<min(SharedState.pairCount, pairSettings.count) {
             engine.shared.pairGain[pair].value = LevelMath.linear(fromDB: pairSettings[pair].gainDB)
             engine.shared.pairMuted[pair].value = pairSettings[pair].muted
+            engine.fx.pairSend[pair].value = pairSettings[pair].fxSend
+            engine.fx.pairReturn[pair].value = pairSettings[pair].fxReturn
         }
     }
 
     // MARK: - Metering
 
+    /// 30 Hz rather than 60. Peak ballistics are time-based so they behave
+    /// identically, the bars are indistinguishable in motion, and it halves the
+    /// cost of the only thing in this app that runs continuously.
+    private static let meterHz: Double = 30
+
+    /// Keep the render thread's peak cells from saturating while we are not
+    /// drawing, so the meters are correct the instant the window reappears.
+    private func drainMetersWithoutPublishing() {
+        for channel in 0..<SharedState.outputChannelCount {
+            _ = engine.shared.channelPeak[channel].drain()
+        }
+        for index in 0..<sources.count {
+            _ = engine.shared.sources[index].peak[0].drain()
+            _ = engine.shared.sources[index].peak[1].drain()
+        }
+        _ = engine.fx.outputPeak[0].drain()
+        _ = engine.fx.outputPeak[1].drain()
+        lastTick = Date()
+    }
+
     private func startDisplayTimer() {
-        let timer = Timer(timeInterval: 1.0 / 60.0, repeats: true) { [weak self] _ in
+        let timer = Timer(timeInterval: 1.0 / Self.meterHz, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.tick() }
         }
         RunLoop.main.add(timer, forMode: .common)
@@ -403,33 +440,34 @@ final class AppModel: ObservableObject {
     }
 
     private func tick() {
+        // Nothing to draw when the window is hidden behind something or the app
+        // is in the background, and this is the only continuous work we do.
+        guard NSApp?.occlusionState.contains(.visible) ?? true else {
+            drainMetersWithoutPublishing()
+            return
+        }
+
         let now = Date()
         let delta = min(now.timeIntervalSince(lastTick), 0.1)
         lastTick = now
 
-        var updatedOutputs = meters
-        for channel in 0..<SharedState.outputChannelCount {
-            updatedOutputs[channel].update(peakLinear: engine.shared.channelPeak[channel].drain(),
-                                           delta: delta)
-        }
-        meters = updatedOutputs
-
-        if sourceMeters.count == sources.count * 2 {
-            var updatedSources = sourceMeters
-            for index in 0..<sources.count {
-                let state = engine.shared.sources[index]
-                updatedSources[index * 2].update(peakLinear: state.peak[0].drain(), delta: delta)
-                updatedSources[index * 2 + 1].update(peakLinear: state.peak[1].drain(), delta: delta)
-            }
-            sourceMeters = updatedSources
-        }
+        meterModel.update(shared: engine.shared, fxState: engine.fx,
+                          sourceCount: sources.count, delta: delta)
 
         slowTickCounter += 1
-        if slowTickCounter >= 30 {          // twice a second
+        if slowTickCounter >= Int(Self.meterHz / 2) {      // twice a second
             slowTickCounter = 0
             let current = AudioDevices.systemDefaultOutput()
             if current?.uid != systemOutput?.uid { systemOutput = current }
             if loopback == nil || outputCandidates.isEmpty { refreshDevices() }
         }
     }
+}
+
+/// Which parameter page the RV7000's remote programmer is displaying.
+enum FXEditPage: String, CaseIterable, Identifiable {
+    case reverb, eq, gate
+
+    var id: String { rawValue }
+    var label: String { rawValue.uppercased() }
 }

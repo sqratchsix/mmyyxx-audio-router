@@ -31,7 +31,9 @@ final class RouterEngine: @unchecked Sendable {
     }
 
     let shared = SharedState()
+    let fx = FXState()
     private(set) var state: State = .stopped
+    private let reverb = ReverbEngine()
 
     private var aggregate: AggregateDevice?
     private var procID: AudioDeviceIOProcID?
@@ -53,14 +55,29 @@ final class RouterEngine: @unchecked Sendable {
     private static let destinationCount = SharedState.pairCount * 2
     private let destinations = UnsafeMutablePointer<ChannelRef>.allocate(capacity: destinationCount)
 
+    /// FX bus scratch, sized for the largest buffer CoreAudio is likely to hand
+    /// us. Allocated once; the render thread only ever writes into it.
+    private static let maxFrames = 8192
+    private let fxInputLeft = UnsafeMutablePointer<Float>.allocate(capacity: maxFrames)
+    private let fxInputRight = UnsafeMutablePointer<Float>.allocate(capacity: maxFrames)
+    private let fxOutputLeft = UnsafeMutablePointer<Float>.allocate(capacity: maxFrames)
+    private let fxOutputRight = UnsafeMutablePointer<Float>.allocate(capacity: maxFrames)
+
     init() {
         destinations.initialize(repeating: .none, count: Self.destinationCount)
+        for buffer in [fxInputLeft, fxInputRight, fxOutputLeft, fxOutputRight] {
+            buffer.initialize(repeating: 0, count: Self.maxFrames)
+        }
     }
 
     deinit {
         stop()
         destinations.deinitialize(count: Self.destinationCount)
         destinations.deallocate()
+        for buffer in [fxInputLeft, fxInputRight, fxOutputLeft, fxOutputRight] {
+            buffer.deinitialize(count: Self.maxFrames)
+            buffer.deallocate()
+        }
     }
 
     func start(output: AudioDeviceInfo,
@@ -83,6 +100,7 @@ final class RouterEngine: @unchecked Sendable {
 
             // ~20 ms to slew a fader change; fast enough to feel immediate, slow
             // enough that no one hears a zipper.
+            reverb.prepare(sampleRate: rate)
             smoothingCoefficient = 1 - exp(-1.0 / Float(0.020 * rate))
             for index in 0..<SharedState.maxSources {
                 smoothedSourceGain[index] = shared.sources[index].gain.value
@@ -139,6 +157,8 @@ final class RouterEngine: @unchecked Sendable {
         routes = []
         for peak in shared.channelPeak { peak.value = 0 }
         for source in shared.sources { for peak in source.peak { peak.value = 0 } }
+        for peak in fx.outputPeak { peak.value = 0 }
+        reverb.reset()
         state = .stopped
     }
 
@@ -185,7 +205,12 @@ final class RouterEngine: @unchecked Sendable {
 
         let frames = Int(outputList[0].mDataByteSize) / MemoryLayout<Float>.size
             / Int(max(outputList[0].mNumberChannels, 1))
-        guard frames > 0 else { return noErr }
+        guard frames > 0, frames <= Self.maxFrames else { return noErr }
+
+        let fxParameters = fx.snapshot()
+        let fxActive = fxParameters.enabled && fxParameters.dryWet > 0.0001
+        memset(fxInputLeft, 0, frames * MemoryLayout<Float>.size)
+        memset(fxInputRight, 0, frames * MemoryLayout<Float>.size)
 
         // Clear every output channel before mixing. IOProc output buffers arrive
         // with undefined contents, and the aggregate also exposes the loopback
@@ -224,6 +249,7 @@ final class RouterEngine: @unchecked Sendable {
             }
 
             let target = source.muted.value ? 0 : source.gain.value
+            let fxSend = fxActive ? fx.sourceSend[index].value : 0
             let panLeft = source.panLeft.value
             let panRight = source.panRight.value
             var gain = smoothedSourceGain[index]
@@ -248,6 +274,13 @@ final class RouterEngine: @unchecked Sendable {
                 let left = rawLeft * gain * panLeft
                 let right = rawRight * gain * panRight
 
+                // Post-fader send: muting a channel takes its reverb with it,
+                // which is what anyone expects from a mute.
+                if fxSend > 0 {
+                    fxInputLeft[frame] += left * fxSend
+                    fxInputRight[frame] += right * fxSend
+                }
+
                 for pair in 0..<SharedState.pairCount where sendMask & (1 << UInt32(pair)) != 0 {
                     let outLeftRef = destinations[pair * 2]
                     let outRightRef = destinations[pair * 2 + 1]
@@ -263,7 +296,38 @@ final class RouterEngine: @unchecked Sendable {
             source.peak[1].raise(to: peakRight)
         }
 
-        // Pass 2: pair faders and output metering.
+        // Pass 1b: the output pairs can feed the FX too. Tapping here, before
+        // the return is summed in below, is what stops this being a feedback
+        // loop when a pair both sends to the reverb and receives from it.
+        if fxActive {
+            for pair in 0..<SharedState.pairCount {
+                let send = fx.pairSend[pair].value
+                guard send > 0 else { continue }
+                let leftRef = destinations[pair * 2]
+                let rightRef = destinations[pair * 2 + 1]
+                guard let outLeft = leftRef.base, let outRight = rightRef.base else { continue }
+                for frame in 0..<frames {
+                    fxInputLeft[frame] += outLeft[frame * leftRef.stride] * send
+                    fxInputRight[frame] += outRight[frame * rightRef.stride] * send
+                }
+            }
+
+            reverb.process(inputLeft: fxInputLeft, inputRight: fxInputRight,
+                           outputLeft: fxOutputLeft, outputRight: fxOutputRight,
+                           frames: frames, parameters: fxParameters)
+
+            var fxPeakLeft: Float = 0
+            var fxPeakRight: Float = 0
+            for frame in 0..<frames {
+                let l = abs(fxOutputLeft[frame]), r = abs(fxOutputRight[frame])
+                if l > fxPeakLeft { fxPeakLeft = l }
+                if r > fxPeakRight { fxPeakRight = r }
+            }
+            fx.outputPeak[0].raise(to: fxPeakLeft)
+            fx.outputPeak[1].raise(to: fxPeakRight)
+        }
+
+        // Pass 2: FX return, pair faders and output metering.
         for pair in 0..<SharedState.pairCount {
             let leftRef = destinations[pair * 2]
             let rightRef = destinations[pair * 2 + 1]
@@ -276,10 +340,18 @@ final class RouterEngine: @unchecked Sendable {
             var peakLeft: Float = 0
             var peakRight: Float = 0
 
+            // Dry/Wet scales the return rather than blending inside the unit,
+            // because on a send bus the dry path never enters the reverb.
+            let returnLevel = fxActive
+                ? fx.pairReturn[pair].value * fxParameters.dryWet
+                : 0
+
             for frame in 0..<frames {
                 gain += (target - gain) * coefficient
-                let left = outLeft[frame * leftRef.stride] * gain
-                let right = outRight[frame * rightRef.stride] * gain
+                let wetLeft = returnLevel > 0 ? fxOutputLeft[frame] * returnLevel : 0
+                let wetRight = returnLevel > 0 ? fxOutputRight[frame] * returnLevel : 0
+                let left = (outLeft[frame * leftRef.stride] + wetLeft) * gain
+                let right = (outRight[frame * rightRef.stride] + wetRight) * gain
                 outLeft[frame * leftRef.stride] = left
                 outRight[frame * rightRef.stride] = right
                 let absLeft = abs(left), absRight = abs(right)

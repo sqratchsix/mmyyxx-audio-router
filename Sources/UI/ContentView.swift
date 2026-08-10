@@ -20,6 +20,10 @@ struct ContentView: View {
             .opacity(model.isRunning ? 1 : 0.45)
             .disabled(!model.isRunning)
 
+            RV7000View()
+                .opacity(model.isRunning ? 1 : 0.45)
+                .disabled(!model.isRunning)
+
             footer
         }
         .padding(14)
@@ -41,11 +45,11 @@ struct ContentView: View {
                 ForEach(Array(model.sources.enumerated()), id: \.element.id) { index, source in
                     // SwiftUI can render between the source list and the meter
                     // array being resized, so both still need a bounds check.
-                    if index < model.sourceSettings.count, index * 2 + 1 < model.sourceMeters.count {
+                    if index < model.sourceSettings.count {
                         SourceStrip(
                             source: source,
-                            leftMeter: model.sourceMeters[index * 2],
-                            rightMeter: model.sourceMeters[index * 2 + 1],
+                            meters: model.meterModel,
+                            meterIndex: index,
                             settings: $model.sourceSettings[index],
                             pairLabels: model.pairChannels,
                             externalTravel: model.isSystemStrip(source) ? model.systemVolumeTravel : nil,
@@ -67,8 +71,8 @@ struct ContentView: View {
                         ChannelStrip(
                             title: model.pairNames[pair],
                             channels: model.pairChannels[pair],
-                            leftMeter: model.meters[pair * 2],
-                            rightMeter: model.meters[pair * 2 + 1],
+                            meters: model.meterModel,
+                            pair: pair,
                             settings: $model.pairSettings[pair]
                         )
                     }
