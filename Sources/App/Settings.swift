@@ -103,16 +103,18 @@ struct PersistedSettings: Codable {
     /// Keyed by `MixerSource.id`, which is stable across relaunches and across
     /// device rescans, so a strip keeps its level when the source list is rebuilt.
     var sources: [String: SourceSettings] = [:]
-    var fx = FXParameters()
+    var fxChain: [FXDeviceSettings] = [FXDeviceSettings(kind: .reverb)]
+    /// Only read, never written: pre-rack documents stored one reverb here.
+    private var fx: FXParameters?
 
     init(selectedOutputUID: String? = nil,
          pairs: [PairSettings] = Array(repeating: PairSettings(), count: SharedState.pairCount),
          sources: [String: SourceSettings] = [:],
-         fx: FXParameters = FXParameters()) {
+         fxChain: [FXDeviceSettings] = [FXDeviceSettings(kind: .reverb)]) {
         self.selectedOutputUID = selectedOutputUID
         self.pairs = pairs
         self.sources = sources
-        self.fx = fx
+        self.fxChain = fxChain
     }
 
     init(from decoder: Decoder) throws {
@@ -122,7 +124,16 @@ struct PersistedSettings: Codable {
         pairs = try container.decodeIfPresent([PairSettings].self, forKey: .pairs)
             ?? Array(repeating: PairSettings(), count: SharedState.pairCount)
         sources = try container.decodeIfPresent([String: SourceSettings].self, forKey: .sources) ?? [:]
-        fx = try container.decodeIfPresent(FXParameters.self, forKey: .fx) ?? FXParameters()
+        if let chain = try container.decodeIfPresent([FXDeviceSettings].self, forKey: .fxChain) {
+            fxChain = chain
+        } else if let legacy = try container.decodeIfPresent(FXParameters.self, forKey: .fx) {
+            // Patches written before the rack held a single reverb inline.
+            var device = FXDeviceSettings(kind: .reverb)
+            device.reverb = legacy
+            fxChain = [device]
+        } else {
+            fxChain = [FXDeviceSettings(kind: .reverb)]
+        }
     }
 
     func normalized() -> PersistedSettings {
@@ -133,7 +144,8 @@ struct PersistedSettings: Codable {
         }
         copy.pairs = pairs
         copy.sources = copy.sources.mapValues { $0.normalized() }
-        copy.fx = copy.fx.normalized()
+        copy.fxChain = Array(copy.fxChain.prefix(FXChainSnapshot.maxDevices)).map { $0.normalized() }
+        if copy.fxChain.isEmpty { copy.fxChain = [FXDeviceSettings(kind: .reverb)] }
         return copy
     }
 }

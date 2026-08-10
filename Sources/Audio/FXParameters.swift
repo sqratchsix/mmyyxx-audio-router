@@ -5,6 +5,9 @@ import Synchronization
 /// than per sample, so the render thread sees a coherent set even if the UI
 /// moves several controls at once.
 struct FXParameters: Equatable, Codable {
+    /// Multi Tap fans the delay line out this many times.
+    static let maxTaps = 16
+
     var enabled = true
     var algorithm: ReverbAlgorithm = .hall
 
@@ -83,7 +86,7 @@ struct FXParameters: Equatable, Codable {
         copy.predelayMs = min(max(predelayMs, 0), 250)
         copy.echoTimeMs = min(max(echoTimeMs, 10), 2_000)
         copy.echoFeedback = min(max(echoFeedback, 0), 0.95)
-        copy.tapCount = min(max(tapCount, 1), 8)
+        copy.tapCount = min(max(tapCount, 1), Self.maxTaps)
         copy.eqLowFrequency = min(max(eqLowFrequency, 20), 2_000)
         copy.eqLowGainDB = min(max(eqLowGainDB, -18), 18)
         copy.eqHighFrequency = min(max(eqHighFrequency, 200), 18_000)
@@ -95,19 +98,19 @@ struct FXParameters: Equatable, Codable {
     }
 }
 
-/// Lock-free handoff of the whole parameter block.
+/// Lock-free handoff of the whole rack.
 ///
-/// Rather than one atomic per field, the struct is versioned: the UI writes a
+/// Rather than one atomic per field, the snapshot is versioned: the UI writes a
 /// copy and bumps a counter, and the render thread only re-reads when the
-/// counter moves. The copy itself is guarded by a lock the audio thread never
-/// takes, because it reads through the cached snapshot instead.
+/// counter moves. `FXChainSnapshot` is plain-old-data, so that read is a memcpy
+/// with no retain, release or free on the audio thread.
 final class FXState: @unchecked Sendable {
     private let version = Atomic<UInt64>(0)
-    private var storage = FXParameters()
+    private var storage = FXChainSnapshot()
     private let storageLock = NSLock()
 
-    /// Only the render thread calls this, and only when `version` has moved.
-    private var renderCache = FXParameters()
+    /// Only the render thread touches these, and only when `version` has moved.
+    private var renderCache = FXChainSnapshot()
     private var renderVersion: UInt64 = 0
 
     /// Per-source and per-pair send levels, which change independently of the
@@ -126,9 +129,9 @@ final class FXState: @unchecked Sendable {
         outputPeak = [AtomicFloat(0), AtomicFloat(0)]
     }
 
-    func publish(_ parameters: FXParameters) {
+    func publish(_ chain: FXChainSnapshot) {
         storageLock.lock()
-        storage = parameters.normalized()
+        storage = chain
         storageLock.unlock()
         version.wrappingAdd(1, ordering: .releasing)
     }
@@ -136,7 +139,7 @@ final class FXState: @unchecked Sendable {
     /// Render-thread read. Takes the lock only on the rare block where something
     /// changed, and `try` means it never blocks: if the UI happens to hold the
     /// lock right now, the previous snapshot is used for one more block.
-    func snapshot() -> FXParameters {
+    func snapshot() -> FXChainSnapshot {
         let current = version.load(ordering: .acquiring)
         if current != renderVersion {
             if storageLock.try() {

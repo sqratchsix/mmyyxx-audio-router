@@ -33,7 +33,7 @@ final class RouterEngine: @unchecked Sendable {
     let shared = SharedState()
     let fx = FXState()
     private(set) var state: State = .stopped
-    private let reverb = ReverbEngine()
+    private let fxRack = FXChain()
 
     private var aggregate: AggregateDevice?
     private var procID: AudioDeviceIOProcID?
@@ -100,7 +100,7 @@ final class RouterEngine: @unchecked Sendable {
 
             // ~20 ms to slew a fader change; fast enough to feel immediate, slow
             // enough that no one hears a zipper.
-            reverb.prepare(sampleRate: rate)
+            fxRack.prepare(sampleRate: rate)
             smoothingCoefficient = 1 - exp(-1.0 / Float(0.020 * rate))
             for index in 0..<SharedState.maxSources {
                 smoothedSourceGain[index] = shared.sources[index].gain.value
@@ -158,7 +158,7 @@ final class RouterEngine: @unchecked Sendable {
         for peak in shared.channelPeak { peak.value = 0 }
         for source in shared.sources { for peak in source.peak { peak.value = 0 } }
         for peak in fx.outputPeak { peak.value = 0 }
-        reverb.reset()
+        fxRack.reset()
         state = .stopped
     }
 
@@ -207,8 +207,8 @@ final class RouterEngine: @unchecked Sendable {
             / Int(max(outputList[0].mNumberChannels, 1))
         guard frames > 0, frames <= Self.maxFrames else { return noErr }
 
-        let fxParameters = fx.snapshot()
-        let fxActive = fxParameters.enabled && fxParameters.dryWet > 0.0001
+        let fxChain = fx.snapshot()
+        let fxActive = fxChain.isActive
         memset(fxInputLeft, 0, frames * MemoryLayout<Float>.size)
         memset(fxInputRight, 0, frames * MemoryLayout<Float>.size)
 
@@ -312,13 +312,16 @@ final class RouterEngine: @unchecked Sendable {
                 }
             }
 
-            reverb.process(inputLeft: fxInputLeft, inputRight: fxInputRight,
-                           outputLeft: fxOutputLeft, outputRight: fxOutputRight,
-                           frames: frames, parameters: fxParameters)
+            // The rack works in place down the bus, so the chain's output ends
+            // up in the same buffers the sends filled.
+            fxRack.process(left: fxInputLeft, right: fxInputRight,
+                           frames: frames, chain: fxChain)
 
             var fxPeakLeft: Float = 0
             var fxPeakRight: Float = 0
             for frame in 0..<frames {
+                fxOutputLeft[frame] = fxInputLeft[frame]
+                fxOutputRight[frame] = fxInputRight[frame]
                 let l = abs(fxOutputLeft[frame]), r = abs(fxOutputRight[frame])
                 if l > fxPeakLeft { fxPeakLeft = l }
                 if r > fxPeakRight { fxPeakRight = r }
@@ -340,11 +343,9 @@ final class RouterEngine: @unchecked Sendable {
             var peakLeft: Float = 0
             var peakRight: Float = 0
 
-            // Dry/Wet scales the return rather than blending inside the unit,
-            // because on a send bus the dry path never enters the reverb.
-            let returnLevel = fxActive
-                ? fx.pairReturn[pair].value * fxParameters.dryWet
-                : 0
+            // Each device sets its own wet level, so the pair return is simply
+            // how much of the rack's output this pair takes.
+            let returnLevel = fxActive ? fx.pairReturn[pair].value : 0
 
             for frame in 0..<frames {
                 gain += (target - gain) * coefficient

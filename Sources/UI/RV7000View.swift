@@ -14,6 +14,12 @@ enum Rack {
     /// as one signal path rather than two unrelated panels.
     static let sendTint = Color(red: 1.0, green: 0.44, blue: 0.32)
 
+    /// One rack unit. Devices are a whole number of these and never stretch:
+    /// a 1U panel has to look like a 1U panel at any window size.
+    static let unit: CGFloat = 80
+    static let railWidth: CGFloat = 15
+    static let deviceGap: CGFloat = 3
+
     static func mono(_ size: CGFloat, weight: Font.Weight = .semibold) -> Font {
         .system(size: size, weight: weight, design: .monospaced)
     }
@@ -26,28 +32,33 @@ enum Rack {
 /// A homage to Reason's RV7000: a 1U main panel with the headline controls, and
 /// a Remote Programmer below carrying everything else on a red LCD.
 struct RV7000View: View {
-    @EnvironmentObject private var model: AppModel
+    @Binding var device: FXDeviceSettings
+    let index: Int
+    let meters: MeterModel
+
+    /// Convenience so the body reads the same as before the rack existed.
+    private var fx: FXParameters { device.reverb }
 
     var body: some View {
-        VStack(spacing: 0) {
-            mainPanel
-            Rectangle().fill(Color.black.opacity(0.8)).frame(height: 3)
-            remoteProgrammer
+        RackEars(index: index, units: FXDeviceKind.reverb.rackUnits,
+                 title: "RV7000", enabled: $device.enabled) {
+            VStack(spacing: 0) {
+                mainPanel
+                    .frame(height: Rack.unit)
+                Rectangle().fill(Color.black.opacity(0.8)).frame(height: 2)
+                remoteProgrammer
+                    .frame(height: Rack.unit * 2 - 2)
+            }
+            .opacity(device.enabled ? 1 : 0.45)
+            .background(Rack.chassis)
         }
-        .background(Rack.chassis)
-        .clipShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: 5, style: .continuous)
-                .strokeBorder(Color.black.opacity(0.7), lineWidth: 1)
-        )
-        .shadow(color: .black.opacity(0.45), radius: 8, y: 3)
     }
 
     // MARK: - Main panel
 
     private var mainPanel: some View {
         HStack(spacing: 0) {
-            rackEar(leading: true)
+            RackScrewColumn()
 
             HStack(spacing: 14) {
                 powerSection
@@ -61,11 +72,10 @@ struct RV7000View: View {
                 dryWetSection
                 outputMeter
             }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 9)
-            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 10)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
 
-            rackEar(leading: false)
+            RackScrewColumn()
         }
         .background(
             LinearGradient(colors: [Rack.panel, Rack.panelDark],
@@ -80,46 +90,14 @@ struct RV7000View: View {
             .padding(.vertical, 2)
     }
 
-    private func rackEar(leading: Bool) -> some View {
-        VStack {
-            screw
-            Spacer(minLength: 0)
-            screw
-        }
-        .padding(.vertical, 6)
-        .padding(.horizontal, 7)
-        .frame(width: 30)
-        .background(
-            LinearGradient(colors: [Rack.panel.opacity(0.9), Rack.panelDark],
-                           startPoint: leading ? .leading : .trailing,
-                           endPoint: leading ? .trailing : .leading)
-        )
-    }
-
-    private var screw: some View {
-        Circle()
-            .fill(
-                RadialGradient(colors: [Color(white: 0.62), Color(white: 0.28)],
-                               center: .topLeading, startRadius: 0, endRadius: 9)
-            )
-            .overlay(
-                Rectangle()
-                    .fill(Color.black.opacity(0.55))
-                    .frame(width: 7, height: 1.4)
-                    .rotationEffect(.degrees(38))
-            )
-            .frame(width: 11, height: 11)
-            .shadow(color: .black.opacity(0.4), radius: 1, y: 0.5)
-    }
-
     /// Three-position Bypass / On / Off switch, plus the input ladder.
     private var powerSection: some View {
         HStack(spacing: 7) {
             VStack(alignment: .leading, spacing: 3) {
                 ForEach(["Bypass", "On", "Off"], id: \.self) { label in
-                    let isOn = (label == "On" && model.fx.enabled) || (label == "Off" && !model.fx.enabled)
+                    let isOn = (label == "On" && device.reverb.enabled) || (label == "Off" && !device.reverb.enabled)
                     Button {
-                        model.fx.enabled = (label == "On")
+                        device.reverb.enabled = (label == "On")
                     } label: {
                         HStack(spacing: 4) {
                             Circle()
@@ -136,7 +114,7 @@ struct RV7000View: View {
             }
 
             // Send-level ladder, so you can see the bus is receiving something.
-            FXLadder(meters: model.meterModel, channels: [0], segments: 8, segmentWidth: 8)
+            FXLadder(meters: meters, channels: [0], segments: 8, segmentWidth: 8)
         }
     }
 
@@ -152,7 +130,7 @@ struct RV7000View: View {
                 .clipShape(RoundedRectangle(cornerRadius: 2))
 
             HStack(spacing: 5) {
-                Text(model.fx.algorithm.displayName.uppercased())
+                Text(device.reverb.algorithm.displayName.uppercased())
                     .font(Rack.mono(10, weight: .bold))
                     .foregroundStyle(Rack.screenInk)
                     .shadow(color: Rack.screenInk.opacity(0.6), radius: 3)
@@ -177,8 +155,8 @@ struct RV7000View: View {
     private func stepButton(up: Bool) -> some View {
         Button {
             let all = ReverbAlgorithm.allCases
-            let index = model.fx.algorithm.rawValue + (up ? 1 : -1)
-            model.fx.algorithm = all[min(max(index, 0), all.count - 1)]
+            let index = device.reverb.algorithm.rawValue + (up ? 1 : -1)
+            device.reverb.algorithm = all[min(max(index, 0), all.count - 1)]
         } label: {
             Image(systemName: up ? "chevron.up" : "chevron.down")
                 .font(.system(size: 6, weight: .black))
@@ -196,11 +174,11 @@ struct RV7000View: View {
 
     private var enableSection: some View {
         VStack(alignment: .leading, spacing: 8) {
-            enableRow(title: "EQ Enable", isOn: model.fx.eqEnabled) {
-                model.fx.eqEnabled.toggle()
+            enableRow(title: "EQ Enable", isOn: device.reverb.eqEnabled) {
+                device.reverb.eqEnabled.toggle()
             }
-            enableRow(title: "Gate Enable", isOn: model.fx.gateEnabled) {
-                model.fx.gateEnabled.toggle()
+            enableRow(title: "Gate Enable", isOn: device.reverb.gateEnabled) {
+                device.reverb.gateEnabled.toggle()
             }
         }
     }
@@ -234,31 +212,31 @@ struct RV7000View: View {
 
     private var mainKnobs: some View {
         HStack(spacing: 14) {
-            labelledKnob("Decay", spec: FXPages.right(.eq)[2], diameter: 30)
-            labelledKnob("HF Damp", spec: FXPages.right(.gate)[0], diameter: 30)
-            labelledKnob("Hi EQ", spec: FXPages.left(.eq)[3], diameter: 30)
+            labelledKnob("Decay", spec: FXPages.right(.eq)[2], diameter: 28)
+            labelledKnob("HF Damp", spec: FXPages.right(.gate)[0], diameter: 28)
+            labelledKnob("Hi EQ", spec: FXPages.left(.eq)[3], diameter: 28)
         }
     }
 
     private var dryWetSection: some View {
-        labelledKnob("Dry - Wet", spec: FXPages.right(.reverb)[3], diameter: 30)
+        labelledKnob("Dry - Wet", spec: FXPages.right(.reverb)[3], diameter: 28)
     }
 
     private func labelledKnob(_ title: String, spec: FXParameterSpec, diameter: CGFloat) -> some View {
         VStack(spacing: 3) {
             Knob(
                 value: Binding(
-                    get: { spec.normalized(model.fx) },
-                    set: { spec.apply(&model.fx, $0) }
+                    get: { spec.normalized(fx) },
+                    set: { spec.apply(&device.reverb, $0) }
                 ),
                 diameter: diameter,
                 resetValue: spec.resetValue,
-                isActive: spec.isActive(model.fx)
+                isActive: spec.isActive(fx)
             )
             Text(title)
                 .font(Rack.caption(8))
                 .foregroundStyle(Rack.engraved)
-            Text(spec.format(model.fx))
+            Text(spec.format(fx))
                 .font(Rack.mono(7))
                 .foregroundStyle(Rack.engraved.opacity(0.7))
         }
@@ -267,7 +245,7 @@ struct RV7000View: View {
 
     private var outputMeter: some View {
         HStack(spacing: 8) {
-            FXLadder(meters: model.meterModel, channels: [0, 1])
+            FXLadder(meters: meters, channels: [0, 1])
 
             VStack(alignment: .leading, spacing: 0) {
                 Text("RV7000")
@@ -290,13 +268,14 @@ struct RV7000View: View {
             programmerBranding
 
             HStack(spacing: 8) {
-                knobColumn(FXPages.left(model.fxEditPage))
+                knobColumn(FXPages.left(device.editPage))
                 display
-                knobColumn(FXPages.right(model.fxEditPage))
+                knobColumn(FXPages.right(device.editPage))
             }
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 10)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+        .frame(maxHeight: .infinity)
         .background(
             LinearGradient(colors: [Rack.chassis, Color.black.opacity(0.92)],
                            startPoint: .top, endPoint: .bottom)
@@ -316,12 +295,12 @@ struct RV7000View: View {
 
             VStack(alignment: .leading, spacing: 3) {
                 ForEach(FXEditPage.allCases) { page in
-                    Button { model.fxEditPage = page } label: {
+                    Button { device.editPage = page } label: {
                         HStack(spacing: 4) {
                             Circle()
-                                .fill(model.fxEditPage == page ? Rack.led : Rack.ledOff)
+                                .fill(device.editPage == page ? Rack.led : Rack.ledOff)
                                 .frame(width: 5, height: 5)
-                                .shadow(color: model.fxEditPage == page ? Rack.led.opacity(0.8) : .clear,
+                                .shadow(color: device.editPage == page ? Rack.led.opacity(0.8) : .clear,
                                         radius: 3)
                             Text(page.rawValue.capitalized)
                                 .font(Rack.caption(8))
@@ -334,8 +313,8 @@ struct RV7000View: View {
 
             Button {
                 let all = FXEditPage.allCases
-                let index = (all.firstIndex(of: model.fxEditPage) ?? 0) + 1
-                model.fxEditPage = all[index % all.count]
+                let index = (all.firstIndex(of: device.editPage) ?? 0) + 1
+                device.editPage = all[index % all.count]
             } label: {
                 Text("Edit Mode")
                     .font(Rack.caption(7))
@@ -357,16 +336,16 @@ struct RV7000View: View {
     }
 
     private func knobColumn(_ specs: [FXParameterSpec]) -> some View {
-        VStack(spacing: 9) {
+        VStack(spacing: 7) {
             ForEach(specs) { spec in
                 Knob(
                     value: Binding(
-                        get: { spec.normalized(model.fx) },
-                        set: { spec.apply(&model.fx, $0) }
+                        get: { spec.normalized(fx) },
+                        set: { spec.apply(&device.reverb, $0) }
                     ),
-                    diameter: 21,
+                    diameter: 20,
                     resetValue: spec.resetValue,
-                    isActive: spec.isActive(model.fx)
+                    isActive: spec.isActive(fx)
                 )
             }
         }
@@ -374,13 +353,13 @@ struct RV7000View: View {
 
     private var display: some View {
         HStack(spacing: 0) {
-            parameterColumn(FXPages.left(model.fxEditPage), alignment: .leading)
-            FXGraph(parameters: model.fx)
+            parameterColumn(FXPages.left(device.editPage), alignment: .leading)
+            FXGraph(parameters: fx)
                 .frame(maxWidth: .infinity)
-            parameterColumn(FXPages.right(model.fxEditPage), alignment: .trailing)
+            parameterColumn(FXPages.right(device.editPage), alignment: .trailing)
         }
         .padding(7)
-        .frame(height: 116)
+        .frame(maxHeight: .infinity)
         .background(Rack.screen)
         .overlay(
             RoundedRectangle(cornerRadius: 2)
@@ -393,12 +372,12 @@ struct RV7000View: View {
                                  alignment: HorizontalAlignment) -> some View {
         VStack(alignment: alignment, spacing: 5) {
             ForEach(specs) { spec in
-                let active = spec.isActive(model.fx)
+                let active = spec.isActive(fx)
                 VStack(alignment: alignment, spacing: 0) {
                     Text(spec.name)
                         .font(Rack.mono(8))
                         .foregroundStyle(active ? Rack.screenInk : Rack.screenDim)
-                    Text(spec.format(model.fx))
+                    Text(spec.format(fx))
                         .font(Rack.mono(8, weight: .bold))
                         .foregroundStyle(active ? Rack.screenInk : Rack.screenDim)
                         .shadow(color: active ? Rack.screenInk.opacity(0.5) : .clear, radius: 2)
@@ -483,7 +462,7 @@ struct FXGraph: View {
 
     private func drawTaps(context: GraphicsContext, plot: CGRect) {
         let spacing = parameters.echoTimeMs / 1000
-        let count = parameters.algorithm == .multiTap ? parameters.tapCount : 16
+        let count = parameters.algorithm == .multiTap ? parameters.tapCount : FXParameters.maxTaps * 2
         for tap in 0..<count {
             let t = spacing * Float(tap + 1)
             guard t <= Self.spanSeconds else { break }

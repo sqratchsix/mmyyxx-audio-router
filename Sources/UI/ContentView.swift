@@ -20,7 +20,7 @@ struct ContentView: View {
             .opacity(model.isRunning ? 1 : 0.45)
             .disabled(!model.isRunning)
 
-            RV7000View()
+            RackView()
                 .opacity(model.isRunning ? 1 : 0.45)
                 .disabled(!model.isRunning)
 

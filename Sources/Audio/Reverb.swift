@@ -98,6 +98,23 @@ final class ReverbEngine {
     private var cached = FXParameters()
     private var cacheValid = false
 
+    /// Switching algorithm moves every delay-line read position and every filter
+    /// coefficient at once. Doing that mid-signal is a step discontinuity, which
+    /// is the pop. The wet output is ramped to silence first, the new settings
+    /// are applied at the zero crossing, and it ramps back up.
+    private enum Transition { case idle, fadingOut, fadingIn }
+    private var transition: Transition = .idle
+    private var fadeGain: Float = 1
+    private var fadeStep: Float = 1
+    private var pending = FXParameters()
+
+    /// Delay times are glided rather than crossfaded. Jumping a read position
+    /// clicks; sliding it just bends the pitch briefly, which is what every
+    /// delay unit does when you turn the time knob.
+    private var glidedPredelay: Float = 0
+    private var glidedEchoTime: Float = 0
+    private var glideCoefficient: Float = 0.0005
+
     init() {
         // Sized for the worst case at 96 kHz so the sample rate can change
         // without reallocating on the audio thread.
@@ -125,6 +142,10 @@ final class ReverbEngine {
     func prepare(sampleRate: Double) {
         self.sampleRate = Float(sampleRate)
         cacheValid = false
+        // ~12 ms ramp: long enough to be inaudible, short enough that switching
+        // presets still feels instant.
+        fadeStep = 1 / (0.012 * self.sampleRate)
+        glideCoefficient = 1 - exp(-1 / (0.030 * self.sampleRate))
         reset()
     }
 
@@ -145,6 +166,10 @@ final class ReverbEngine {
         eqLowLeft.reset(); eqLowRight.reset()
         eqHighLeft.reset(); eqHighRight.reset()
         gateLeft.reset(); gateRight.reset()
+        transition = .idle
+        fadeGain = 1
+        glidedPredelay = 0
+        glidedEchoTime = 0
     }
 
     // MARK: - Coefficients
@@ -241,14 +266,27 @@ final class ReverbEngine {
                  frames: Int,
                  parameters: FXParameters) {
 
-        if !cacheValid || parameters != cached {
+        if !cacheValid {
             updateCoefficients(parameters)
             cached = parameters
             cacheValid = true
+            glidedPredelay = parameters.predelayMs * sampleRate / 1000
+            glidedEchoTime = parameters.echoTimeMs * sampleRate / 1000
+        } else if parameters != cached, transition == .idle {
+            if parameters.algorithm != cached.algorithm {
+                // Structural change: hold it until the output has ramped down.
+                pending = parameters
+                transition = .fadingOut
+            } else {
+                updateCoefficients(parameters)
+                cached = parameters
+            }
         }
 
-        let predelaySamples = max(parameters.predelayMs * sampleRate / 1000, 1)
-        let algorithm = parameters.algorithm
+        let targetPredelay = max(cached.predelayMs * sampleRate / 1000, 1)
+        let targetEchoTime = max(cached.echoTimeMs * sampleRate / 1000, 1)
+        let algorithm = cached.algorithm
+        let parameters = cached
 
         for frame in 0..<frames {
             var left = inputLeft[frame]
@@ -256,10 +294,12 @@ final class ReverbEngine {
             let keyLeft = left, keyRight = right
 
             // Pre-delay sits ahead of everything, so it offsets the whole effect.
+            glidedPredelay += (targetPredelay - glidedPredelay) * glideCoefficient
+            glidedEchoTime += (targetEchoTime - glidedEchoTime) * glideCoefficient
             predelayLeft.write(left)
             predelayRight.write(right)
-            left = predelayLeft.read(predelaySamples)
-            right = predelayRight.read(predelaySamples)
+            left = predelayLeft.read(glidedPredelay)
+            right = predelayRight.read(glidedPredelay)
 
             var wetLeft: Float
             var wetRight: Float
@@ -291,8 +331,24 @@ final class ReverbEngine {
                 wetRight = gateRight.process(wetRight, key: keyRight)
             }
 
-            outputLeft[frame] = wetLeft
-            outputRight[frame] = wetRight
+            switch transition {
+            case .fadingOut:
+                fadeGain -= fadeStep
+                if fadeGain <= 0 {
+                    fadeGain = 0
+                    updateCoefficients(pending)
+                    cached = pending
+                    transition = .fadingIn
+                }
+            case .fadingIn:
+                fadeGain += fadeStep
+                if fadeGain >= 1 { fadeGain = 1; transition = .idle }
+            case .idle:
+                break
+            }
+
+            outputLeft[frame] = wetLeft * fadeGain
+            outputRight[frame] = wetRight * fadeGain
         }
     }
 
@@ -335,7 +391,7 @@ final class ReverbEngine {
     @inline(__always)
     private func renderEcho(_ left: Float, _ right: Float,
                             _ parameters: FXParameters) -> (Float, Float) {
-        let samples = max(parameters.echoTimeMs * sampleRate / 1000, 1)
+        let samples = glidedEchoTime
         let tapLeft = echoLeft.read(samples)
         // Offsetting the right tap turns a mono echo into a ping-pong.
         let tapRight = echoRight.read(samples * 1.5)
@@ -354,8 +410,8 @@ final class ReverbEngine {
 
         var outLeft: Float = 0
         var outRight: Float = 0
-        let count = max(min(parameters.tapCount, 8), 1)
-        let spacing = max(parameters.echoTimeMs, 10) * sampleRate / 1000
+        let count = max(min(parameters.tapCount, FXParameters.maxTaps), 1)
+        let spacing = glidedEchoTime
 
         for tap in 0..<count {
             let position = spacing * Float(tap + 1)
@@ -372,7 +428,7 @@ final class ReverbEngine {
     @inline(__always)
     private func renderReverse(_ left: Float, _ right: Float,
                                _ parameters: FXParameters) -> (Float, Float) {
-        let window = max(parameters.echoTimeMs * sampleRate / 1000, 128)
+        let window = max(glidedEchoTime, 128)
         reverseBuffer.write((left + right) * 0.5)
 
         // Two grains half a window apart, each reading backwards, crossfaded so

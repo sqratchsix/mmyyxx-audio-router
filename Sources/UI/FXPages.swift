@@ -198,8 +198,8 @@ enum FXPages {
                 FXParameterSpec(
                     id: "taps", name: "Tap Count",
                     format: { "\($0.tapCount)" },
-                    normalized: { Double($0.tapCount - 1) / 7 },
-                    apply: { $0.tapCount = Int(($1 * 7).rounded()) + 1 },
+                    normalized: { Double($0.tapCount - 1) / Double(FXParameters.maxTaps - 1) },
+                    apply: { $0.tapCount = Int(($1 * Double(FXParameters.maxTaps - 1)).rounded()) + 1 },
                     isActive: { $0.algorithm == .multiTap }
                 ),
                 dryWet,

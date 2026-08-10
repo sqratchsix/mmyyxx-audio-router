@@ -53,14 +53,16 @@ final class AppModel: ObservableObject {
     /// times a second and must not invalidate anything above the meter leaves.
     let meterModel = MeterModel()
 
-    // FX
-    @Published var fx = FXParameters() {
+    // FX rack
+    @Published var fxChain: [FXDeviceSettings] = [FXDeviceSettings(kind: .reverb)] {
         didSet {
-            guard oldValue != fx else { return }
-            engine.fx.publish(fx)
+            guard oldValue != fxChain else { return }
+            engine.fx.publish(FXChainSnapshot(fxChain))
             scheduleSave()
         }
     }
+    /// Which device the remote programmer is editing, and which page of it.
+    @Published var fxEditDevice = 0
     /// Which page the remote programmer is showing.
     @Published var fxEditPage: FXEditPage = .reverb
 
@@ -223,8 +225,10 @@ final class AppModel: ObservableObject {
         let persisted = store.load()
         storedSourceSettings = persisted.sources
         pairSettings = persisted.pairs
-        fx = persisted.fx
-        engine.fx.publish(persisted.fx)
+        fxChain = persisted.fxChain.isEmpty
+            ? [FXDeviceSettings(kind: .reverb)]
+            : persisted.fxChain
+        engine.fx.publish(FXChainSnapshot(fxChain))
         isDiscovering = true              // suppress the restarts in `didSet`
         selectedOutputUID = persisted.selectedOutputUID
         isDiscovering = false
@@ -257,18 +261,41 @@ final class AppModel: ObservableObject {
         store.save(PersistedSettings(selectedOutputUID: selectedOutputUID,
                                      pairs: pairSettings,
                                      sources: merged,
-                                     fx: fx))
+                                     fxChain: fxChain))
     }
 
     func resetSettings() {
         storedSourceSettings = [:]
-        fx = FXParameters()
+        fxChain = [FXDeviceSettings(kind: .reverb)]
         pairSettings = Array(repeating: PairSettings(), count: SharedState.pairCount)
         rebuildSources(preservingCurrent: false)
         saveNow()
     }
 
     var settingsLocation: URL { store.location }
+
+    // MARK: - Rack
+
+    var rackIsFull: Bool { fxChain.count >= FXChainSnapshot.maxDevices }
+
+    func addDevice(_ kind: FXDeviceKind) {
+        guard !rackIsFull else { return }
+        fxChain.append(FXDeviceSettings(kind: kind))
+        fxEditDevice = fxChain.count - 1
+    }
+
+    func removeDevice(at index: Int) {
+        guard fxChain.indices.contains(index) else { return }
+        fxChain.remove(at: index)
+        fxEditDevice = min(fxEditDevice, max(fxChain.count - 1, 0))
+    }
+
+    func moveDevice(at index: Int, by offset: Int) {
+        let destination = index + offset
+        guard fxChain.indices.contains(index), fxChain.indices.contains(destination) else { return }
+        fxChain.swapAt(index, destination)
+        fxEditDevice = destination
+    }
 
     // MARK: - Devices
 
@@ -464,12 +491,4 @@ final class AppModel: ObservableObject {
             if loopback == nil || outputCandidates.isEmpty { refreshDevices() }
         }
     }
-}
-
-/// Which parameter page the RV7000's remote programmer is displaying.
-enum FXEditPage: String, CaseIterable, Identifiable {
-    case reverb, eq, gate
-
-    var id: String { rawValue }
-    var label: String { rawValue.uppercased() }
 }

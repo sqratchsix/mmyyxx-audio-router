@@ -178,10 +178,32 @@ surprises anyone through the speakers. Unmute and raise the fader to use one.
 | MUTE | Per source and per output pair. |
 | CLIP | Latches while a pair's post-fader peak hold sits at 0 dBFS. |
 
-## The effect
+## The rack
 
-A reverb modelled on Reason's RV7000: a main panel with the headline controls
-and a Remote Programmer below carrying the rest on a red LCD.
+The FX send feeds a 19-inch rack with mounting rails that holds up to four
+devices chained in series. Device panels are a whole number of rack units and
+never stretch, so a 1U panel stays 1U at any window size.
+
+| Device | Height | |
+|---|---|---|
+| RV7000 Advanced Reverb | 3U | main panel plus Remote Programmer |
+| DL1 Delay Line | 1U | stereo delay, damped feedback, ping-pong |
+
+Hover a device for its power, reorder and remove controls. Each slot owns both a
+reverb and a delay from the moment the app starts: adding a device at runtime
+must never make the audio thread allocate a delay line, so the units are pooled
+and a slot simply uses whichever its current kind calls for. Changing a slot's
+device type clears that unit, which is a buffer memset rather than an allocation.
+
+The chain snapshot handed to the render thread is deliberately not an `Array`.
+It is a fixed-capacity plain-old-data struct, so copying it is a memcpy; an array
+would retain and release a heap buffer, and dropping the last reference would
+call `free` on the audio thread.
+
+## The reverb
+
+Modelled on Reason's RV7000: a main panel with the headline controls and a
+Remote Programmer below carrying the rest on a red LCD.
 
 Six of the algorithms are a feedback delay network — eight delay lines with
 mutually non-harmonic lengths, a four-stage allpass diffuser on the input, and a
@@ -192,13 +214,23 @@ how far the delay set is stretched; Plate and Spring add diffusion density. Echo
 and Multi Tap bypass the network for a tap-based path, and Reverse plays
 crossfaded grains backwards into it.
 
+Multi Tap fans the delay line out up to 16 times.
+
 **Decay compensation.** The damping filters inside the feedback path shave a
 little off the midband on every pass, and at tens of passes per second that
 compounds. Measured with an impulse test, a 20 s Decay setting was decaying in
 about 3 s. The feedback gain is now divided by the filters' measured loss at
-500 Hz, so Decay means RT60 again while the top end still dies away first. An
-offline harness (`Tools/`-style, see the commit) sweeps every algorithm and the
-extremes looking for NaN or a tail that fails to decay.
+500 Hz, so Decay means RT60 again while the top end still dies away first.
+
+**Switching without a pop.** Changing algorithm moves every delay-line read
+position and every filter coefficient at once, which is a step discontinuity and
+audible as a click. The wet output ramps to silence over ~12 ms, the new settings
+are applied at the zero crossing, and it ramps back up. Delay times are handled
+differently: they glide rather than crossfade, because sliding a read position
+bends the pitch briefly instead of stepping, which is what a delay is expected to
+do when you turn the time knob. Measured across every algorithm pair, the worst
+sample-to-sample delta during a switch is now *smaller* than the signal's normal
+slew.
 
 ## Performance
 
