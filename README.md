@@ -8,6 +8,12 @@ and each strip can be sent to either output pair independently.
 Built for a MOTU M4 (Main Out 1–2, Line Out 3–4, four analog inputs), but any
 interface with four or more outputs appears in the device menu.
 
+<img src="docs/mmyyxx.png" alt="mmyyxx: five source strips and two output pairs above a 19-inch FX rack holding an RV7000 reverb" width="880">
+
+Five input strips feed two output pairs, and both can send to the rack below.
+The RV7000 here is running Multi Tap, which is why the display is drawing 15
+discrete taps rather than a decay envelope.
+
 ## Why this is needed
 
 macOS only ever sends system audio to channels 1–2 of the selected output device.
