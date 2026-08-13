@@ -141,6 +141,24 @@ control still.
 After installing BlackHole, `sudo killall coreaudiod` makes it visible without a
 reboot.
 
+## Install
+
+A built app is attached to each [release](https://github.com/sqratchsix/mmyyxx-audio-router/releases).
+It is **Apple silicon only** and **ad-hoc signed**, not notarized, so macOS
+quarantines it on download and refuses to open it with a double-click. Strip the
+quarantine flag after unzipping:
+
+```sh
+xattr -dr com.apple.quarantine /Applications/mmyyxx.app
+open /Applications/mmyyxx.app
+```
+
+Right-click the app and choose **Open** works too. Notarizing properly needs a
+paid Apple Developer ID, which this project does not have.
+
+BlackHole has to be installed separately, see Requirements below. The app detects
+when it is missing and shows the command.
+
 ## Build and run
 
 ```sh
