@@ -189,6 +189,8 @@ final class AppModel: ObservableObject {
     /// Settings for sources that are not currently present, kept so unplugging
     /// and reconnecting an interface does not discard its mix.
     private var storedSourceSettings: [String: SourceSettings] = [:]
+    /// Levels a previous unclean exit failed to give back.
+    private var recoveredVolumes: [String: Float] = [:]
 
     // MARK: - Lifecycle
 
@@ -208,8 +210,10 @@ final class AppModel: ObservableObject {
     func onTerminate() {
         stopSystemVolumeObserver()
         saveTimer?.invalidate()
-        saveNow()
+        // Stop first: releasing the borrowed volumes empties the record, and the
+        // save below is what marks the exit as clean.
         engine.stop()
+        saveNow()
         displayTimer?.invalidate()
         // Leave the user's sound output the way we found it.
         if let previousSystemOutputUID,
@@ -224,6 +228,11 @@ final class AppModel: ObservableObject {
     private func loadSettings() {
         let persisted = store.load()
         storedSourceSettings = persisted.sources
+        recoveredVolumes = persisted.borrowedVolumes
+        if !recoveredVolumes.isEmpty {
+            Diagnostics.log("recovering \(recoveredVolumes.count) output volume(s) "
+                + "from an unclean exit")
+        }
         pairSettings = persisted.pairs
         fxChain = persisted.fxChain
         engine.fx.publish(FXChainSnapshot(fxChain))
@@ -259,7 +268,8 @@ final class AppModel: ObservableObject {
         store.save(PersistedSettings(selectedOutputUID: selectedOutputUID,
                                      pairs: pairSettings,
                                      sources: merged,
-                                     fxChain: fxChain))
+                                     fxChain: fxChain,
+                                     borrowedVolumes: engine.borrowedVolumeRecord))
     }
 
     func resetSettings() {
@@ -405,7 +415,8 @@ final class AppModel: ObservableObject {
             return
         }
 
-        engine.start(output: output, loopback: loopback, sources: sources)
+        engine.start(output: output, loopback: loopback, sources: sources,
+                     recoveredVolumes: recoveredVolumes)
 
         switch engine.state {
         case .running(let rate, let frames):

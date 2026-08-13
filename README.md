@@ -84,12 +84,23 @@ sending to the interface, which is exactly what this app writes, so routing one
 into the mix would close a feedback loop. Sources whose driver-supplied channel
 name contains "loopback" are filtered out.
 
-**Output volume is claimed at unity.** Interfaces typically expose a software
-volume control only on their "preferred stereo pair", because that is the pair
-the macOS volume slider drives. On the M4 that means channels 1–2 carry a volume
-control and 3–4 do not, so the two pairs can sit 30 dB apart with no visible
-cause. On start the app forces every settable output volume to unity and restores
-the original values on quit, leaving its own faders as the only attenuation.
+**Output volume is claimed and held at unity.** Interfaces typically expose a
+software volume control only on their "preferred stereo pair", because that is
+the pair the macOS volume slider drives. On the M4 that means channels 1–2 carry
+a volume control and 3–4 do not, so the two pairs can sit 30 dB apart with no
+visible cause.
+
+Claiming it once at startup turned out not to be enough: something in the system
+puts that value back to a remembered level afterwards, and the app had no idea,
+leaving Main Out 30 dB down while every fader read normal. A property listener
+now holds each claimed control at unity for as long as the engine runs. Nothing
+contends for it, because the interface's front-panel knob is analogue and sits
+downstream of the digital control.
+
+The original levels are written to the settings file while they are held and
+cleared on a clean exit. A non-empty record on launch means the last run ended
+unexpectedly, and those are the levels to give back, so a crash cannot make the
+app mistake its own unity value for the user's setting.
 
 **The macOS volume slider moves to the wrong end of the chain.** Once system
 output points at BlackHole, that slider stops being the last stage before the
@@ -129,8 +140,8 @@ above its original level, so it cannot clip.
 Hold Option-Shift with the volume keys for quarter steps if you want finer
 control still.
 
-> Restore-on-quit only runs on a graceful quit. If the app is force-quit or
-> crashes, the borrowed volume controls stay at unity until the next clean exit.
+> A force-quit still leaves the controls at unity until the next clean exit, but
+> the levels to restore survive it.
 
 ## Requirements
 

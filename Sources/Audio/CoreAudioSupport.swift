@@ -207,10 +207,11 @@ enum AudioDevices {
     /// Watch a device's master output volume. Fires on the main queue whenever
     /// anything changes it, including the keyboard volume keys.
     static func observeOutputVolume(_ id: AudioObjectID,
+                                    channel: UInt32 = 0,
                                     handler: @escaping () -> Void) -> AudioObjectPropertyListenerBlock? {
         var address = CA.addr(kAudioDevicePropertyVolumeScalar,
                               scope: kAudioDevicePropertyScopeOutput,
-                              element: 0)
+                              element: channel)
         guard AudioObjectHasProperty(id, &address) else { return nil }
         let block: AudioObjectPropertyListenerBlock = { _, _ in handler() }
         guard AudioObjectAddPropertyListenerBlock(id, &address, DispatchQueue.main, block) == noErr else {
@@ -220,10 +221,11 @@ enum AudioDevices {
     }
 
     static func stopObservingOutputVolume(_ id: AudioObjectID,
+                                          channel: UInt32 = 0,
                                           block: @escaping AudioObjectPropertyListenerBlock) {
         var address = CA.addr(kAudioDevicePropertyVolumeScalar,
                               scope: kAudioDevicePropertyScopeOutput,
-                              element: 0)
+                              element: channel)
         AudioObjectRemovePropertyListenerBlock(id, &address, DispatchQueue.main, block)
     }
 

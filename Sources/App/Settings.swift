@@ -104,17 +104,24 @@ struct PersistedSettings: Codable {
     /// device rescans, so a strip keeps its level when the source list is rebuilt.
     var sources: [String: SourceSettings] = [:]
     var fxChain: [FXDeviceSettings] = [FXDeviceSettings(kind: .reverb)]
+    /// Interface output volumes the app has taken over, keyed device#channel.
+    /// Written while they are held and cleared on a clean exit, so a non-empty
+    /// value here on launch means the last run ended unexpectedly and these are
+    /// the levels to give back.
+    var borrowedVolumes: [String: Float] = [:]
     /// Only read, never written: pre-rack documents stored one reverb here.
     private var fx: FXParameters?
 
     init(selectedOutputUID: String? = nil,
          pairs: [PairSettings] = Array(repeating: PairSettings(), count: SharedState.pairCount),
          sources: [String: SourceSettings] = [:],
-         fxChain: [FXDeviceSettings] = [FXDeviceSettings(kind: .reverb)]) {
+         fxChain: [FXDeviceSettings] = [FXDeviceSettings(kind: .reverb)],
+         borrowedVolumes: [String: Float] = [:]) {
         self.selectedOutputUID = selectedOutputUID
         self.pairs = pairs
         self.sources = sources
         self.fxChain = fxChain
+        self.borrowedVolumes = borrowedVolumes
     }
 
     init(from decoder: Decoder) throws {
@@ -124,6 +131,8 @@ struct PersistedSettings: Codable {
         pairs = try container.decodeIfPresent([PairSettings].self, forKey: .pairs)
             ?? Array(repeating: PairSettings(), count: SharedState.pairCount)
         sources = try container.decodeIfPresent([String: SourceSettings].self, forKey: .sources) ?? [:]
+        borrowedVolumes = try container.decodeIfPresent([String: Float].self,
+                                                        forKey: .borrowedVolumes) ?? [:]
         if let chain = try container.decodeIfPresent([FXDeviceSettings].self, forKey: .fxChain) {
             fxChain = chain
         } else if let legacy = try container.decodeIfPresent(FXParameters.self, forKey: .fx) {

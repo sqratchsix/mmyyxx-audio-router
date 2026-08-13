@@ -48,7 +48,22 @@ final class RouterEngine: @unchecked Sendable {
     private var smoothingCoefficient: Float = 0.001
 
     // Device volume controls we forced to unity, and what they were before.
-    private var borrowedVolumes: [(device: AudioObjectID, channel: UInt32, original: Float)] = []
+    private var borrowedVolumes: [(device: AudioObjectID, uid: String,
+                                   channel: UInt32, original: Float)] = []
+    /// Listeners that put a claimed control back if anything moves it.
+    private var volumeGuards: [(device: AudioObjectID, channel: UInt32,
+                                block: AudioObjectPropertyListenerBlock)] = []
+
+    /// The originals, keyed so they can be persisted and recovered after a crash.
+    /// Held in memory alone, an unclean exit loses the user's real level and the
+    /// next launch captures unity as if it were their setting.
+    var borrowedVolumeRecord: [String: Float] {
+        var record: [String: Float] = [:]
+        for entry in borrowedVolumes {
+            record["\(entry.uid)#\(entry.channel)"] = entry.original
+        }
+        return record
+    }
 
     /// Scratch space for the render thread's resolved output channels, allocated
     /// once. Building this as a Swift array inside the callback would allocate.
@@ -83,6 +98,7 @@ final class RouterEngine: @unchecked Sendable {
     func start(output: AudioDeviceInfo,
                loopback: AudioDeviceInfo,
                sources: [MixerSource],
+               recoveredVolumes: [String: Float] = [:],
                sampleRate: Double = 48_000) {
         stop()
 
@@ -124,7 +140,7 @@ final class RouterEngine: @unchecked Sendable {
                 return
             }
 
-            claimOutputVolumes(on: output)
+            claimOutputVolumes(on: output, recovered: recoveredVolumes)
 
             aggregate = device
             procID = proc
@@ -166,18 +182,48 @@ final class RouterEngine: @unchecked Sendable {
     /// faders are the only attenuation in the chain. Without this, the pairs that
     /// happen to carry a macOS volume control sit at whatever the system slider
     /// last left them at, while the pairs without one run wide open.
-    private func claimOutputVolumes(on device: AudioDeviceInfo) {
+    /// - Parameter recovered: originals persisted by a previous run that did not
+    ///   exit cleanly. When present they are trusted over the current reading,
+    ///   which would otherwise be the unity value that run left behind.
+    private func claimOutputVolumes(on device: AudioDeviceInfo, recovered: [String: Float]) {
         releaseOutputVolumes()
         for channel in 1...UInt32(device.outputChannels) {
-            guard let original = AudioDevices.outputVolume(device.id, channel: channel) else { continue }
+            guard let live = AudioDevices.outputVolume(device.id, channel: channel) else { continue }
+            let original = recovered["\(device.uid)#\(channel)"] ?? live
             guard AudioDevices.setOutputVolume(device.id, channel: channel, 1.0) else { continue }
-            borrowedVolumes.append((device.id, channel, original))
-            Diagnostics.log(String(format: "channel %d volume %.3f -> 1.000 (device control claimed)",
-                                   channel, original))
+            borrowedVolumes.append((device.id, device.uid, channel, original))
+            installVolumeGuard(device: device.id, channel: channel)
+            Diagnostics.log(String(format: "channel %d volume %.3f -> 1.000 (claimed, restores to %.3f)",
+                                   channel, live, original))
         }
     }
 
+    /// Hold a claimed control at unity for as long as the engine runs.
+    ///
+    /// Claiming once at startup was not enough: something in the system was
+    /// putting the interface's channel 1-2 volume back to a remembered value
+    /// afterwards, leaving the output 30 dB down with nothing in the app to show
+    /// why. Nothing else contends for this control, since the interface's front
+    /// panel knob is analogue and sits downstream of it.
+    private func installVolumeGuard(device: AudioObjectID, channel: UInt32) {
+        guard let block = AudioDevices.observeOutputVolume(device, channel: channel, handler: { [weak self] in
+            guard let self, case .running = self.state else { return }
+            guard let current = AudioDevices.outputVolume(device, channel: channel) else { return }
+            guard current < 0.999 else { return }
+            // Writing 1.0 re-enters this handler once, then settles.
+            AudioDevices.setOutputVolume(device, channel: channel, 1.0)
+            Diagnostics.log(String(format: "channel %d moved to %.3f, held at unity", channel, current))
+        }) else { return }
+        volumeGuards.append((device, channel, block))
+    }
+
     private func releaseOutputVolumes() {
+        for guardEntry in volumeGuards {
+            AudioDevices.stopObservingOutputVolume(guardEntry.device,
+                                                   channel: guardEntry.channel,
+                                                   block: guardEntry.block)
+        }
+        volumeGuards.removeAll()
         for entry in borrowedVolumes {
             AudioDevices.setOutputVolume(entry.device, channel: entry.channel, entry.original)
         }
