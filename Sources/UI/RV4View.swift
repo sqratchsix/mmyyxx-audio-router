@@ -21,7 +21,7 @@ enum Rack {
     static let earWidth: CGFloat = 22
     static let deviceGap: CGFloat = 3
 
-    /// Narrowest the rack can be drawn without its widest device (the RV7000)
+    /// Narrowest the rack can be drawn without its widest device (the RV4)
     /// clipping. The window uses this as its minimum, because a 19-inch rack
     /// that has to squeeze is not a 19-inch rack.
     static let minimumDeviceWidth: CGFloat = 700
@@ -36,9 +36,9 @@ enum Rack {
     }
 }
 
-/// A homage to Reason's RV7000: a 1U main panel with the headline controls, and
+/// A homage to Reason's RV4: a 1U main panel with the headline controls, and
 /// a Remote Programmer below carrying everything else on a red LCD.
-struct RV7000View: View {
+struct RV4View: View {
     @Binding var device: FXDeviceSettings
     let index: Int
     let meters: MeterModel
@@ -47,18 +47,22 @@ struct RV7000View: View {
     private var fx: FXParameters { device.reverb }
 
     var body: some View {
-        RackEars(index: index, units: FXDeviceKind.reverb.rackUnits,
-                 title: "RV7000", enabled: $device.enabled) {
+        RackEars(index: index,
+                 units: FXDeviceKind.reverb.rackUnits(expanded: device.expanded),
+                 title: "RV4", enabled: $device.enabled) {
             VStack(spacing: 0) {
                 mainPanel
                     .frame(height: Rack.unit)
-                Rectangle().fill(Color.black.opacity(0.8)).frame(height: 2)
-                remoteProgrammer
-                    .frame(height: Rack.unit * 2 - 2)
+                if device.expanded {
+                    Rectangle().fill(Color.black.opacity(0.8)).frame(height: 2)
+                    remoteProgrammer
+                        .frame(height: Rack.unit * 2 - 2)
+                }
             }
             .opacity(device.enabled ? 1 : 0.45)
             .background(Rack.chassis)
         }
+        .animation(.easeOut(duration: 0.16), value: device.expanded)
     }
 
     // MARK: - Main panel
@@ -149,9 +153,31 @@ struct RV7000View: View {
                 }
             }
 
-            Text("◀ Remote Programmer")
-                .font(Rack.caption(7))
-                .foregroundStyle(Rack.engraved.opacity(0.85))
+            // Opens and closes the lower panel. Folded away, the RV4 is a 1U
+            // device, which is the point: a rack of three-unit reverbs you are
+            // not currently editing is mostly wasted height.
+            Button { device.expanded.toggle() } label: {
+                HStack(spacing: 4) {
+                    Image(systemName: device.expanded ? "chevron.down" : "chevron.right")
+                        .font(.system(size: 6, weight: .black))
+                    Text("Remote Programmer")
+                        .font(Rack.caption(7))
+                }
+                .foregroundStyle(Rack.engraved.opacity(device.expanded ? 1 : 0.85))
+                .padding(.horizontal, 5)
+                .padding(.vertical, 2)
+                .background(
+                    RoundedRectangle(cornerRadius: 3, style: .continuous)
+                        .fill(Color.black.opacity(device.expanded ? 0.22 : 0.10))
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 3, style: .continuous)
+                        .strokeBorder(Color.black.opacity(0.28), lineWidth: 1)
+                )
+            }
+            .buttonStyle(.plain)
+            .help(device.expanded ? "Close the programmer and fold the device to 1U"
+                                  : "Open the programmer")
         }
     }
 
@@ -251,7 +277,7 @@ struct RV7000View: View {
             FXLadder(meters: meters, channels: [0, 1])
 
             VStack(alignment: .leading, spacing: 0) {
-                Text("RV7000")
+                Text("RV4")
                     .font(.system(size: 15, weight: .black, design: .rounded))
                     .foregroundStyle(Rack.engraved)
                 Text("Advanced")
@@ -288,7 +314,7 @@ struct RV7000View: View {
     private var programmerBranding: some View {
         VStack(alignment: .leading, spacing: 6) {
             VStack(alignment: .leading, spacing: 0) {
-                Text("RV7000")
+                Text("RV4")
                     .font(.system(size: 13, weight: .black, design: .rounded))
                     .foregroundStyle(Rack.engraved)
                 Text("Remote Programmer")

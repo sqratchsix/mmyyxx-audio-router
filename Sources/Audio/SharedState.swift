@@ -83,8 +83,20 @@ final class SharedState: @unchecked Sendable {
     let pairGain: [AtomicFloat]
     let pairMuted: [AtomicBool]
 
+    /// Whether each pair's post-fader bus feeds the spectrum analyser.
+    let pairToSpectrum: [AtomicBool]
+
     /// Peak magnitude per output channel since the UI last drained it.
     let channelPeak: [AtomicFloat]
+
+    /// Post-fader material from the pairs that feed the analyser.
+    let spectrum = SpectrumTap()
+
+    /// Holds every output at silence until the engine is satisfied that what it
+    /// is about to play is real programme material rather than whatever the
+    /// interface was doing while it enumerated. Cleared by the render thread
+    /// once system audio actually arrives, or by the user from the UI.
+    let safetyMuted = AtomicBool(false)
 
     /// Set by the render thread when it detects the input side is delivering
     /// nothing but digital silence, so the UI can distinguish "quiet" from
@@ -95,6 +107,7 @@ final class SharedState: @unchecked Sendable {
         sources = (0..<Self.maxSources).map { _ in SourceState() }
         pairGain = (0..<Self.pairCount).map { _ in AtomicFloat(1.0) }
         pairMuted = (0..<Self.pairCount).map { _ in AtomicBool(false) }
+        pairToSpectrum = (0..<Self.pairCount).map { _ in AtomicBool(true) }
         channelPeak = (0..<Self.outputChannelCount).map { _ in AtomicFloat(0) }
     }
 

@@ -32,6 +32,8 @@ final class RouterEngine: @unchecked Sendable {
 
     let shared = SharedState()
     let fx = FXState()
+    /// The rack's analyser windows, one per slot.
+    var fxTaps: [SpectrumTap] { fxRack.taps }
     private(set) var state: State = .stopped
     private let fxRack = FXChain()
 
@@ -41,6 +43,21 @@ final class RouterEngine: @unchecked Sendable {
     // Resolved once at start, read by the render thread.
     private var routes: [SourceRoute] = []
     private var outputBase = 0
+    /// One past the last aggregate output channel that belongs to the interface.
+    /// Writing beyond this would land on the loopback device's own outputs,
+    /// which feed straight back into the inputs we read.
+    private var outputLimit = 0
+    /// Index of the source carrying system audio, or -1 when there is none. It
+    /// is the only signal the safety mute trusts as proof that playback is real.
+    private var systemSourceIndex = -1
+
+    // Safety mute, owned by the render thread apart from the published flag.
+    private var safetyFramesElapsed = 0
+    private var safetySettleFrames = 0
+    private var safetyDeadlineFrames = Int.max
+    /// -54 dBFS. Above the noise floor of anything digital, below the quietest
+    /// passage anyone would call playback.
+    private static let safetyThreshold: Float = 0.002
 
     // One-pole smoothed gains, owned exclusively by the render thread.
     private var smoothedSourceGain = [Float](repeating: 1, count: SharedState.maxSources)
@@ -53,6 +70,10 @@ final class RouterEngine: @unchecked Sendable {
     /// Listeners that put a claimed control back if anything moves it.
     private var volumeGuards: [(device: AudioObjectID, channel: UInt32,
                                 block: AudioObjectPropertyListenerBlock)] = []
+    /// Output channels we un-muted, and the listeners holding them that way.
+    private var borrowedMutes: [(device: AudioObjectID, channel: UInt32, original: Bool)] = []
+    private var muteGuards: [(device: AudioObjectID, channel: UInt32,
+                              block: AudioObjectPropertyListenerBlock)] = []
 
     /// The originals, keyed so they can be persisted and recovered after a crash.
     /// Held in memory alone, an unclean exit loses the user's real level and the
@@ -77,10 +98,12 @@ final class RouterEngine: @unchecked Sendable {
     private let fxInputRight = UnsafeMutablePointer<Float>.allocate(capacity: maxFrames)
     private let fxOutputLeft = UnsafeMutablePointer<Float>.allocate(capacity: maxFrames)
     private let fxOutputRight = UnsafeMutablePointer<Float>.allocate(capacity: maxFrames)
+    /// Mono sum of the pairs feeding the analyser.
+    private let spectrumMix = UnsafeMutablePointer<Float>.allocate(capacity: maxFrames)
 
     init() {
         destinations.initialize(repeating: .none, count: Self.destinationCount)
-        for buffer in [fxInputLeft, fxInputRight, fxOutputLeft, fxOutputRight] {
+        for buffer in [fxInputLeft, fxInputRight, fxOutputLeft, fxOutputRight, spectrumMix] {
             buffer.initialize(repeating: 0, count: Self.maxFrames)
         }
     }
@@ -89,7 +112,7 @@ final class RouterEngine: @unchecked Sendable {
         stop()
         destinations.deinitialize(count: Self.destinationCount)
         destinations.deallocate()
-        for buffer in [fxInputLeft, fxInputRight, fxOutputLeft, fxOutputRight] {
+        for buffer in [fxInputLeft, fxInputRight, fxOutputLeft, fxOutputRight, spectrumMix] {
             buffer.deinitialize(count: Self.maxFrames)
             buffer.deallocate()
         }
@@ -99,6 +122,7 @@ final class RouterEngine: @unchecked Sendable {
                loopback: AudioDeviceInfo,
                sources: [MixerSource],
                recoveredVolumes: [String: Float] = [:],
+               safetyMute: Bool = true,
                sampleRate: Double = 48_000) {
         stop()
 
@@ -106,7 +130,27 @@ final class RouterEngine: @unchecked Sendable {
             let device = try AggregateDevice(output: output, input: loopback)
             let rate = device.matchSampleRate(to: sampleRate, devices: [output, loopback])
 
-            outputBase = device.outputOffsets[output.uid] ?? 0
+            // The interface can advertise four outputs while still bringing its
+            // streams up, and the aggregate then lays out fewer channels than
+            // these offsets assume. Every channel index after the short
+            // sub-device shifts, which is how output ends up written into the
+            // loopback device and comes back round as a feedback loop. Refusing
+            // to start is the safe answer; the caller retries a moment later.
+            let interfaceOutputs = device.outputCounts[output.uid] ?? 0
+            let base = device.outputOffsets[output.uid] ?? 0
+            guard interfaceOutputs >= SharedState.outputChannelCount,
+                  device.totalOutputChannels >= base + SharedState.outputChannelCount else {
+                Diagnostics.log("aggregate rejected: \(output.name) contributed "
+                    + "\(interfaceOutputs) output channel(s) at offset \(base), "
+                    + "aggregate total \(device.totalOutputChannels)")
+                state = .failed("\(output.name) is still coming up. Waiting for all "
+                    + "\(SharedState.outputChannelCount) output channels.")
+                return
+            }
+
+            outputBase = base
+            outputLimit = base + interfaceOutputs
+            systemSourceIndex = sources.firstIndex { $0.deviceUID == loopback.uid } ?? -1
             routes = sources.map { source in
                 SourceRoute(
                     inputChannel: (device.inputOffsets[source.deviceUID] ?? 0) + source.firstChannel,
@@ -121,8 +165,16 @@ final class RouterEngine: @unchecked Sendable {
             for index in 0..<SharedState.maxSources {
                 smoothedSourceGain[index] = shared.sources[index].gain.value
             }
+
+            // Arm the safety mute before the first callback runs, and start the
+            // pair smoothers from silence so nothing escapes in the buffers
+            // before they slew down.
+            shared.safetyMuted.value = safetyMute
+            safetyFramesElapsed = 0
+            safetySettleFrames = Int(rate * 0.35)
+            safetyDeadlineFrames = systemSourceIndex >= 0 ? Int.max : Int(rate * 1.5)
             for pair in 0..<SharedState.pairCount {
-                smoothedPairGain[pair] = shared.pairGain[pair].value
+                smoothedPairGain[pair] = safetyMute ? 0 : shared.pairGain[pair].value
             }
 
             var proc: AudioDeviceIOProcID?
@@ -171,6 +223,10 @@ final class RouterEngine: @unchecked Sendable {
         aggregate = nil          // deinit destroys the aggregate device
         releaseOutputVolumes()
         routes = []
+        outputLimit = 0
+        systemSourceIndex = -1
+        shared.safetyMuted.value = false
+        shared.inputIsSilent.value = true
         for peak in shared.channelPeak { peak.value = 0 }
         for source in shared.sources { for peak in source.peak { peak.value = 0 } }
         for peak in fx.outputPeak { peak.value = 0 }
@@ -196,6 +252,38 @@ final class RouterEngine: @unchecked Sendable {
             Diagnostics.log(String(format: "channel %d volume %.3f -> 1.000 (claimed, restores to %.3f)",
                                    channel, live, original))
         }
+        claimOutputMutes(on: device)
+    }
+
+    /// Clear the interface's own mute on every output channel, and hold it
+    /// clear while the engine runs.
+    ///
+    /// An interface typically carries a mute only on the pair macOS treats as
+    /// its preferred stereo output. Muting from the keyboard while that
+    /// interface is the system output leaves that pair dead and the others
+    /// playing, which from inside this app looks like a broken output rather
+    /// than a muted one: the faders move, the meters read level, and nothing
+    /// comes out. The app's own mute buttons are the mute that should matter.
+    private func claimOutputMutes(on device: AudioDeviceInfo) {
+        for channel in 1...UInt32(device.outputChannels) {
+            guard let original = AudioDevices.outputMute(device.id, channel: channel) else { continue }
+            guard AudioDevices.setOutputMute(device.id, channel: channel, false) else { continue }
+            borrowedMutes.append((device.id, channel, original))
+            installMuteGuard(device: device.id, channel: channel)
+            if original {
+                Diagnostics.log("channel \(channel) was muted at the interface; cleared")
+            }
+        }
+    }
+
+    private func installMuteGuard(device: AudioObjectID, channel: UInt32) {
+        guard let block = AudioDevices.observeOutputMute(device, channel: channel, handler: { [weak self] in
+            guard let self, case .running = self.state else { return }
+            guard AudioDevices.outputMute(device, channel: channel) == true else { return }
+            AudioDevices.setOutputMute(device, channel: channel, false)
+            Diagnostics.log("channel \(channel) muted at the interface, cleared again")
+        }) else { return }
+        muteGuards.append((device, channel, block))
     }
 
     /// Hold a claimed control at unity for as long as the engine runs.
@@ -228,6 +316,17 @@ final class RouterEngine: @unchecked Sendable {
             AudioDevices.setOutputVolume(entry.device, channel: entry.channel, entry.original)
         }
         borrowedVolumes.removeAll()
+
+        for guardEntry in muteGuards {
+            AudioDevices.stopObservingOutputMute(guardEntry.device,
+                                                 channel: guardEntry.channel,
+                                                 block: guardEntry.block)
+        }
+        muteGuards.removeAll()
+        for entry in borrowedMutes {
+            AudioDevices.setOutputMute(entry.device, channel: entry.channel, entry.original)
+        }
+        borrowedMutes.removeAll()
     }
 
     // MARK: - Render thread
@@ -272,11 +371,18 @@ final class RouterEngine: @unchecked Sendable {
             UnsafeMutablePointer(mutating: input))
 
         // Destination channels, resolved once into preallocated scratch space.
+        // A slot outside the interface's own range is left unresolved rather
+        // than written: past the end of it sit the loopback device's outputs,
+        // and anything written there is read straight back in as system audio.
         for slot in 0..<Self.destinationCount {
-            destinations[slot] = Self.channel(outputList, index: outputBase + slot)
+            let index = outputBase + slot
+            destinations[slot] = index < outputLimit
+                ? Self.channel(outputList, index: index)
+                : .none
         }
 
         // Pass 1: sources sum into their destinations.
+        var systemPeak: Float = 0
         for index in 0..<routes.count {
             let route = routes[index]
             let source = shared.sources[index]
@@ -340,6 +446,26 @@ final class RouterEngine: @unchecked Sendable {
             smoothedSourceGain[index] = gain
             source.peak[0].raise(to: peakLeft)
             source.peak[1].raise(to: peakRight)
+            if index == systemSourceIndex {
+                systemPeak = max(peakLeft, peakRight)
+            }
+        }
+
+        if systemSourceIndex >= 0 {
+            shared.inputIsSilent.value = systemPeak < 1e-6
+        }
+
+        // Safety mute. Held until system audio is genuinely playing, so an
+        // interface that reconnects into an open microphone cannot ring the
+        // room before anyone can reach a fader.
+        var safetyEngaged = shared.safetyMuted.value
+        if safetyEngaged {
+            safetyFramesElapsed += frames
+            if safetyFramesElapsed >= safetySettleFrames,
+               systemPeak > Self.safetyThreshold || safetyFramesElapsed >= safetyDeadlineFrames {
+                shared.safetyMuted.value = false
+                safetyEngaged = false
+            }
         }
 
         // Pass 1b: the output pairs can feed the FX too. Tapping here, before
@@ -374,6 +500,10 @@ final class RouterEngine: @unchecked Sendable {
             }
             fx.outputPeak[0].raise(to: fxPeakLeft)
             fx.outputPeak[1].raise(to: fxPeakRight)
+        } else {
+            // Nothing ran the bus this buffer, so anything watching it is told
+            // so rather than left looking at a stale window.
+            fxRack.silenceTaps(frames: frames, chain: fxChain)
         }
 
         // Pass 2: FX return, pair faders and output metering.
@@ -382,7 +512,9 @@ final class RouterEngine: @unchecked Sendable {
             let rightRef = destinations[pair * 2 + 1]
             guard let outLeft = leftRef.base, let outRight = rightRef.base else { continue }
 
-            let target = shared.pairMuted[pair].value ? 0 : shared.pairGain[pair].value
+            let target = (safetyEngaged || shared.pairMuted[pair].value)
+                ? 0
+                : shared.pairGain[pair].value
             var gain = smoothedPairGain[pair]
             let coefficient = smoothingCoefficient
 
@@ -392,13 +524,17 @@ final class RouterEngine: @unchecked Sendable {
             // Each device sets its own wet level, so the pair return is simply
             // how much of the rack's output this pair takes.
             let returnLevel = fxActive ? fx.pairReturn[pair].value : 0
+            // Only thin the dry path when something is actually coming back, so
+            // a rack that is bypassed or turned all the way down cannot silence
+            // an output.
+            let dryLevel = returnLevel > 0 ? fx.pairDry[pair].value : 1
 
             for frame in 0..<frames {
                 gain += (target - gain) * coefficient
                 let wetLeft = returnLevel > 0 ? fxOutputLeft[frame] * returnLevel : 0
                 let wetRight = returnLevel > 0 ? fxOutputRight[frame] * returnLevel : 0
-                let left = (outLeft[frame * leftRef.stride] + wetLeft) * gain
-                let right = (outRight[frame * rightRef.stride] + wetRight) * gain
+                let left = (outLeft[frame * leftRef.stride] * dryLevel + wetLeft) * gain
+                let right = (outRight[frame * rightRef.stride] * dryLevel + wetRight) * gain
                 outLeft[frame * leftRef.stride] = left
                 outRight[frame * rightRef.stride] = right
                 let absLeft = abs(left), absRight = abs(right)
@@ -409,6 +545,30 @@ final class RouterEngine: @unchecked Sendable {
             smoothedPairGain[pair] = gain
             shared.channelPeak[pair * 2].raise(to: peakLeft)
             shared.channelPeak[pair * 2 + 1].raise(to: peakRight)
+        }
+
+        // Analyser tap. Post-fader, post-FX, mono sum of whichever pairs are
+        // sending: exactly what leaves the interface. Averaging across the
+        // sending pairs keeps the reading in dBFS when both are on.
+        var sendingPairs = 0
+        for pair in 0..<SharedState.pairCount where shared.pairToSpectrum[pair].value {
+            sendingPairs += 1
+        }
+        if sendingPairs > 0 {
+            memset(spectrumMix, 0, frames * MemoryLayout<Float>.size)
+            let scale = 0.5 / Float(sendingPairs)
+            for pair in 0..<SharedState.pairCount where shared.pairToSpectrum[pair].value {
+                let leftRef = destinations[pair * 2]
+                let rightRef = destinations[pair * 2 + 1]
+                guard let outLeft = leftRef.base, let outRight = rightRef.base else { continue }
+                for frame in 0..<frames {
+                    spectrumMix[frame] += (outLeft[frame * leftRef.stride]
+                        + outRight[frame * rightRef.stride]) * scale
+                }
+            }
+            shared.spectrum.write(spectrumMix, count: frames)
+        } else {
+            shared.spectrum.writeSilence(count: frames)
         }
 
         return noErr

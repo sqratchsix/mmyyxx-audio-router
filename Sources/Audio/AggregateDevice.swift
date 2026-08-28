@@ -20,8 +20,17 @@ final class AggregateDevice {
     private(set) var inputOffsets: [String: Int] = [:]
     /// First channel index of each sub-device within the aggregate's output scope.
     private(set) var outputOffsets: [String: Int] = [:]
+    /// Output channels each sub-device actually contributed, read back after the
+    /// aggregate had a chance to renegotiate the stream formats.
+    private(set) var outputCounts: [String: Int] = [:]
+    /// Output channels the aggregate reports in total. A sub-device that is
+    /// still enumerating can contribute fewer channels than it advertises, which
+    /// shifts every offset after it.
+    private(set) var totalOutputChannels = 0
 
-    private static let uid = "com.jaredsimon.mmyyxx.aggregate"
+    /// Also used to keep the app's own aggregate out of the device menus, since
+    /// a private aggregate is still visible to the process that made it.
+    static let privateUID = "com.jaredsimon.mmyyxx.aggregate"
 
     enum Failure: LocalizedError {
         case creationFailed(OSStatus)
@@ -50,7 +59,7 @@ final class AggregateDevice {
 
         let description: [String: Any] = [
             kAudioAggregateDeviceNameKey as String: "MOTU mmyyxx Engine",
-            kAudioAggregateDeviceUIDKey as String: Self.uid,
+            kAudioAggregateDeviceUIDKey as String: Self.privateUID,
             kAudioAggregateDeviceIsPrivateKey as String: 1,
             kAudioAggregateDeviceIsStackedKey as String: 0,
             kAudioAggregateDeviceMainSubDeviceKey as String: output.uid,
@@ -82,9 +91,11 @@ final class AggregateDevice {
             let live = AudioDevices.device(uid: device.uid) ?? device
             inputOffsets[device.uid] = inputCursor
             outputOffsets[device.uid] = outputCursor
+            outputCounts[device.uid] = live.outputChannels
             inputCursor += live.inputChannels
             outputCursor += live.outputChannels
         }
+        totalOutputChannels = CA.channelCount(id, scope: kAudioDevicePropertyScopeOutput)
     }
 
     /// Align both sub-devices before starting, so the aggregate does not have to

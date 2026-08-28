@@ -135,6 +135,22 @@ struct Biquad {
 
     mutating func reset() { z1 = 0; z2 = 0 }
 
+    /// Magnitude of the filter's response at one frequency, straight from the
+    /// coefficients it is running. Used to draw an EQ curve that is the filter
+    /// rather than an approximation of it.
+    func magnitude(atHz hz: Float, sampleRate: Float) -> Float {
+        let w = 2 * Float.pi * min(max(hz, 1), sampleRate * 0.499) / sampleRate
+        let cos1 = cos(w), sin1 = sin(w)
+        let cos2 = cos(2 * w), sin2 = sin(2 * w)
+        let numeratorReal = b0 + b1 * cos1 + b2 * cos2
+        let numeratorImag = -(b1 * sin1 + b2 * sin2)
+        let denominatorReal = 1 + a1 * cos1 + a2 * cos2
+        let denominatorImag = -(a1 * sin1 + a2 * sin2)
+        let numerator = numeratorReal * numeratorReal + numeratorImag * numeratorImag
+        let denominator = denominatorReal * denominatorReal + denominatorImag * denominatorImag
+        return denominator > 0 ? sqrt(numerator / denominator) : 1
+    }
+
     mutating func setLowShelf(frequency: Float, gainDB: Float, sampleRate: Float) {
         let a = pow(10, gainDB / 40)
         let w = 2 * Float.pi * min(max(frequency, 20), sampleRate * 0.45) / sampleRate
@@ -193,7 +209,7 @@ struct Biquad {
     }
 }
 
-/// Envelope-following gate. The RV7000's gate section chops the reverb tail,
+/// Envelope-following gate. The RV4's gate section chops the reverb tail,
 /// which is how gated-reverb drum sounds are made: a long tail that stops dead
 /// instead of decaying.
 struct EnvelopeGate {

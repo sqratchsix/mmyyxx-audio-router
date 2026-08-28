@@ -52,7 +52,7 @@ enum ReverbAlgorithm: Int, CaseIterable, Codable, Identifiable {
     }
 }
 
-/// The RV7000-style reverb. A feedback delay network with an input diffuser,
+/// The RV4-style reverb. A feedback delay network with an input diffuser,
 /// plus tap-based algorithms that bypass the network entirely.
 ///
 /// Everything is allocated in `init`. `process` runs on the render thread.

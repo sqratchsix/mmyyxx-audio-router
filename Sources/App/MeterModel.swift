@@ -160,7 +160,7 @@ struct SourceMeterPair: View {
     let index: Int
     let isStereo: Bool
     let isPassing: Bool
-    var height: CGFloat = 172
+    var height: CGFloat = Strip.faderHeight
 
     private var width: CGFloat { isStereo ? 19 : 11 }
 
@@ -184,7 +184,7 @@ struct SourceMeterPair: View {
 struct OutputMeterPair: View {
     @ObservedObject var meters: MeterModel
     let pair: Int
-    var height: CGFloat = 172
+    var height: CGFloat = Strip.faderHeight
 
     var body: some View {
         Canvas { context, size in

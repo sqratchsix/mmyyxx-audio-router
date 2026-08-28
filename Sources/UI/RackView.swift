@@ -6,6 +6,8 @@ import SwiftUI
 /// like a 1U device no matter how tall the window gets.
 struct RackView: View {
     @EnvironmentObject private var model: AppModel
+    /// Reveals the add button, which is otherwise out of the way.
+    @State private var hoveringHeader = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -17,7 +19,10 @@ struct RackView: View {
                     ForEach(Array(model.fxChain.enumerated()), id: \.element.id) { index, device in
                         deviceView(index: index, kind: device.kind)
                     }
-                    if !model.rackIsFull { emptyBay }
+                    // Only when there is nothing mounted: with a device in the
+                    // rack the add button in the header is the way to add more,
+                    // and a permanent empty bay is just height.
+                    if model.fxChain.isEmpty { emptyBay }
                 }
                 .padding(.vertical, Rack.deviceGap)
                 .frame(minWidth: Rack.minimumDeviceWidth, maxWidth: .infinity)
@@ -38,9 +43,13 @@ struct RackView: View {
     private func deviceView(index: Int, kind: FXDeviceKind) -> some View {
         switch kind {
         case .reverb:
-            RV7000View(device: model.deviceBinding(index), index: index, meters: model.meterModel)
+            RV4View(device: model.deviceBinding(index), index: index, meters: model.meterModel)
         case .delay:
             DelayDeviceView(device: model.deviceBinding(index), index: index)
+        case .eq:
+            EQDeviceView(device: model.deviceBinding(index), index: index)
+        case .analyzer:
+            SpectrumDeviceView(device: model.deviceBinding(index), index: index)
         }
     }
 
@@ -55,9 +64,16 @@ struct RackView: View {
                 .font(Theme.numeric(8))
                 .foregroundStyle(Theme.textTertiary)
 
+            // Kept in the layout at all times rather than inserted on hover, so
+            // the header does not shift under the pointer as it appears.
+            addDevice
+                .opacity(hoveringHeader && !model.rackIsFull ? 1 : 0)
+                .allowsHitTesting(hoveringHeader && !model.rackIsFull)
+                .animation(.easeOut(duration: 0.14), value: hoveringHeader)
+
             Spacer()
 
-            FXLadder(meters: model.meterModel, channels: [0, 1], segments: 8, segmentWidth: 4)
+            FXLadder(meters: model.meterModel, channels: [0, 1], segments: 6, segmentWidth: 4)
 
             Text("RETURN")
                 .font(Theme.label(7, weight: .semibold))
@@ -65,22 +81,43 @@ struct RackView: View {
                 .foregroundStyle(Theme.textTertiary)
         }
         .padding(.horizontal, 10)
-        .padding(.vertical, 6)
+        .padding(.vertical, 3)
         .background(Color.black.opacity(0.75))
+        .contentShape(Rectangle())
+        .onHover { hoveringHeader = $0 }
     }
 
-    private var emptyBay: some View {
+    private var addDevice: some View {
         Menu {
             ForEach(FXDeviceKind.allCases) { kind in
-                Button("\(kind.displayName)  ·  \(kind.rackUnits)U") { model.addDevice(kind) }
+                Button("\(kind.displayName)  ·  \(kind.expandedUnits)U") { model.addDevice(kind) }
             }
         } label: {
-            HStack(spacing: 6) {
-                Image(systemName: "plus.circle.fill").font(.system(size: 11))
+            HStack(spacing: 3) {
+                Image(systemName: "plus.circle.fill").font(.system(size: 9))
                 Text("Add device")
-                    .font(Theme.label(10, weight: .semibold))
+                    .font(Theme.label(9, weight: .semibold))
             }
             .foregroundStyle(Theme.textSecondary)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 2)
+            .background(
+                RoundedRectangle(cornerRadius: 4, style: .continuous)
+                    .fill(Color.white.opacity(0.07))
+            )
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+    }
+
+    /// Shown only when the rack is empty, where a bare pair of rails would read
+    /// as a broken layout rather than as somewhere to put something.
+    private var emptyBay: some View {
+        Text("EMPTY RACK")
+            .font(Theme.label(9, weight: .semibold))
+            .tracking(1.1)
+            .foregroundStyle(Theme.textTertiary)
             .frame(maxWidth: .infinity)
             .frame(height: Rack.unit)
             .background(
@@ -92,9 +129,6 @@ struct RackView: View {
                     .strokeBorder(style: StrokeStyle(lineWidth: 1, dash: [4, 3]))
                     .foregroundStyle(Color.white.opacity(0.14))
             )
-        }
-        .menuStyle(.borderlessButton)
-        .menuIndicator(.hidden)
     }
 }
 
@@ -187,7 +221,7 @@ struct DelayDeviceView: View {
     let index: Int
 
     var body: some View {
-        RackEars(index: index, units: FXDeviceKind.delay.rackUnits,
+        RackEars(index: index, units: FXDeviceKind.delay.rackUnits(expanded: true),
                  title: "DL1", enabled: $device.enabled) {
             HStack(spacing: 0) {
                 HStack(spacing: 14) {
