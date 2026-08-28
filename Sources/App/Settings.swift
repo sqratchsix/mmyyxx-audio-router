@@ -71,12 +71,26 @@ struct PairSettings: Codable, Equatable {
     var fxSend: Float = 0
     /// How much of the FX output comes back into this pair.
     var fxReturn: Float = 1
+    /// Whether this pair's post-fader bus feeds the spectrum analyser.
+    var toSpectrum: Bool = true
+    /// How much of the pair's own signal is kept alongside the FX return.
+    /// Dropping it to zero with the send up makes the rack an insert.
+    var fxDry: Float = 1
 
-    init(gainDB: Float = 0, muted: Bool = false, fxSend: Float = 0, fxReturn: Float = 1) {
+    init(gainDB: Float = 0, muted: Bool = false, fxSend: Float = 0,
+         fxReturn: Float = 1, toSpectrum: Bool = true, fxDry: Float = 1) {
         self.gainDB = gainDB
         self.muted = muted
         self.fxSend = fxSend
         self.fxReturn = fxReturn
+        self.toSpectrum = toSpectrum
+        self.fxDry = fxDry
+    }
+
+    /// A fresh set of pairs. The analyser starts on the main pair alone, which
+    /// is the one the room is listening to.
+    static var defaults: [PairSettings] {
+        (0..<SharedState.pairCount).map { PairSettings(toSpectrum: $0 == 0) }
     }
 
     init(from decoder: Decoder) throws {
@@ -85,13 +99,17 @@ struct PairSettings: Codable, Equatable {
         muted = try container.decodeIfPresent(Bool.self, forKey: .muted) ?? false
         fxSend = try container.decodeIfPresent(Float.self, forKey: .fxSend) ?? 0
         fxReturn = try container.decodeIfPresent(Float.self, forKey: .fxReturn) ?? 1
+        toSpectrum = try container.decodeIfPresent(Bool.self, forKey: .toSpectrum) ?? true
+        fxDry = try container.decodeIfPresent(Float.self, forKey: .fxDry) ?? 1
     }
 
     func normalized() -> PairSettings {
         PairSettings(gainDB: min(max(gainDB.isFinite ? gainDB : 0, LevelMath.silenceDB), 6),
                      muted: muted,
                      fxSend: min(max(fxSend.isFinite ? fxSend : 0, 0), 1),
-                     fxReturn: min(max(fxReturn.isFinite ? fxReturn : 1, 0), 1))
+                     fxReturn: min(max(fxReturn.isFinite ? fxReturn : 1, 0), 1),
+                     toSpectrum: toSpectrum,
+                     fxDry: min(max(fxDry.isFinite ? fxDry : 1, 0), 1))
     }
 }
 
@@ -99,11 +117,17 @@ struct PairSettings: Codable, Equatable {
 struct PersistedSettings: Codable {
     var version = 1
     var selectedOutputUID: String?
-    var pairs: [PairSettings] = Array(repeating: PairSettings(), count: SharedState.pairCount)
+    var pairs: [PairSettings] = PairSettings.defaults
     /// Keyed by `MixerSource.id`, which is stable across relaunches and across
     /// device rescans, so a strip keeps its level when the source list is rebuilt.
     var sources: [String: SourceSettings] = [:]
     var fxChain: [FXDeviceSettings] = [FXDeviceSettings(kind: .reverb)]
+    /// Analyser look, timing and routing.
+    var spectrum = SpectrumSettings()
+    /// Hold the outputs silent after the engine starts until system audio is
+    /// genuinely playing. Guards against an interface that reconnects into an
+    /// open input and rings the room before anyone can reach a fader.
+    var safetyMute = true
     /// Interface output volumes the app has taken over, keyed device#channel.
     /// Written while they are held and cleared on a clean exit, so a non-empty
     /// value here on launch means the last run ended unexpectedly and these are
@@ -113,14 +137,18 @@ struct PersistedSettings: Codable {
     private var fx: FXParameters?
 
     init(selectedOutputUID: String? = nil,
-         pairs: [PairSettings] = Array(repeating: PairSettings(), count: SharedState.pairCount),
+         pairs: [PairSettings] = PairSettings.defaults,
          sources: [String: SourceSettings] = [:],
          fxChain: [FXDeviceSettings] = [FXDeviceSettings(kind: .reverb)],
+         spectrum: SpectrumSettings = SpectrumSettings(),
+         safetyMute: Bool = true,
          borrowedVolumes: [String: Float] = [:]) {
         self.selectedOutputUID = selectedOutputUID
         self.pairs = pairs
         self.sources = sources
         self.fxChain = fxChain
+        self.spectrum = spectrum
+        self.safetyMute = safetyMute
         self.borrowedVolumes = borrowedVolumes
     }
 
@@ -129,7 +157,10 @@ struct PersistedSettings: Codable {
         version = try container.decodeIfPresent(Int.self, forKey: .version) ?? 1
         selectedOutputUID = try container.decodeIfPresent(String.self, forKey: .selectedOutputUID)
         pairs = try container.decodeIfPresent([PairSettings].self, forKey: .pairs)
-            ?? Array(repeating: PairSettings(), count: SharedState.pairCount)
+            ?? PairSettings.defaults
+        spectrum = try container.decodeIfPresent(SpectrumSettings.self, forKey: .spectrum)
+            ?? SpectrumSettings()
+        safetyMute = try container.decodeIfPresent(Bool.self, forKey: .safetyMute) ?? true
         sources = try container.decodeIfPresent([String: SourceSettings].self, forKey: .sources) ?? [:]
         borrowedVolumes = try container.decodeIfPresent([String: Float].self,
                                                         forKey: .borrowedVolumes) ?? [:]
@@ -147,12 +178,13 @@ struct PersistedSettings: Codable {
 
     func normalized() -> PersistedSettings {
         var copy = self
-        var pairs = Array(repeating: PairSettings(), count: SharedState.pairCount)
+        var pairs = PairSettings.defaults
         for index in 0..<min(copy.pairs.count, SharedState.pairCount) {
             pairs[index] = copy.pairs[index].normalized()
         }
         copy.pairs = pairs
         copy.sources = copy.sources.mapValues { $0.normalized() }
+        copy.spectrum = copy.spectrum.normalized()
         // An empty rack stays empty. The default reverb is for a document that
         // has no chain key at all, not for one where every device was removed.
         copy.fxChain = Array(copy.fxChain.prefix(FXChainSnapshot.maxDevices)).map { $0.normalized() }

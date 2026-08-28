@@ -118,6 +118,10 @@ final class FXState: @unchecked Sendable {
     let sourceSend: [AtomicFloat]
     let pairSend: [AtomicFloat]
     let pairReturn: [AtomicFloat]
+    /// How much of the pair's own signal survives alongside the return. At 1 the
+    /// rack is a parallel send; at 0 the pair hears only what comes back, which
+    /// is what turns the chain into an insert on that output.
+    let pairDry: [AtomicFloat]
 
     /// Post-reverb output level, metered by the UI.
     let outputPeak: [AtomicFloat]
@@ -126,6 +130,7 @@ final class FXState: @unchecked Sendable {
         sourceSend = (0..<SharedState.maxSources).map { _ in AtomicFloat(0) }
         pairSend = (0..<SharedState.pairCount).map { _ in AtomicFloat(0) }
         pairReturn = (0..<SharedState.pairCount).map { _ in AtomicFloat(1) }
+        pairDry = (0..<SharedState.pairCount).map { _ in AtomicFloat(1) }
         outputPeak = [AtomicFloat(0), AtomicFloat(0)]
     }
 

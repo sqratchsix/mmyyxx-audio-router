@@ -18,9 +18,14 @@ final class AppModel: ObservableObject {
     @Published private(set) var outputCandidates: [AudioDeviceInfo] = []
     @Published private(set) var loopback: AudioDeviceInfo?
     @Published private(set) var systemOutput: AudioDeviceInfo?
+    /// Everywhere macOS could send system audio, so the routing choice can be
+    /// made here rather than in System Settings.
+    @Published private(set) var systemOutputCandidates: [AudioDeviceInfo] = []
     @Published var selectedOutputUID: String? {
         didSet {
             guard !isDiscovering, oldValue != selectedOutputUID else { return }
+            // A different interface deserves a fresh set of start attempts.
+            engineRetryCount = 0
             scheduleSave()
             restartEngine()
         }
@@ -42,8 +47,7 @@ final class AppModel: ObservableObject {
     }
 
     // Output pairs
-    @Published var pairSettings: [PairSettings] = Array(repeating: PairSettings(),
-                                                        count: SharedState.pairCount) {
+    @Published var pairSettings: [PairSettings] = PairSettings.defaults {
         didSet {
             pushPairs()
             scheduleSave()
@@ -52,12 +56,49 @@ final class AppModel: ObservableObject {
     /// Held as a plain reference, never `@Published`: this object changes 60
     /// times a second and must not invalidate anything above the meter leaves.
     let meterModel = MeterModel()
+    /// Same rule as the meters: only the analyser view subscribes to this.
+    let spectrum = SpectrumAnalyzer()
+    /// One analyser per rack slot, fed by that slot's tap on the FX bus. Held
+    /// as plain references for the same reason as the meters.
+    let rackSpectra = (0..<FXChainSnapshot.maxDevices).map { _ in SpectrumAnalyzer() }
+
+    func rackAnalyzer(_ slot: Int) -> SpectrumAnalyzer {
+        rackSpectra.indices.contains(slot) ? rackSpectra[slot] : rackSpectra[0]
+    }
+
+    /// Analyser look and behaviour. Unlike the band data this changes only when
+    /// the user reaches for a control, so it lives here.
+    @Published var spectrumSettings = SpectrumSettings() {
+        didSet {
+            guard oldValue != spectrumSettings else { return }
+            if oldValue.refreshHz != spectrumSettings.refreshHz
+                || oldValue.isVisible != spectrumSettings.isVisible {
+                startSpectrumTimer()
+            }
+            scheduleSave()
+        }
+    }
+
+    /// Whether the engine holds the outputs silent until playback is real.
+    @Published var safetyMuteEnabled = true {
+        didSet {
+            guard oldValue != safetyMuteEnabled else { return }
+            if !safetyMuteEnabled { releaseSafetyMute() }
+            scheduleSave()
+        }
+    }
+    /// True while that hold is actually in force.
+    @Published private(set) var isSafetyMuted = false
 
     // FX rack
     @Published var fxChain: [FXDeviceSettings] = [FXDeviceSettings(kind: .reverb)] {
         didSet {
             guard oldValue != fxChain else { return }
             engine.fx.publish(FXChainSnapshot(fxChain))
+            if oldValue.contains(where: { $0.kind == .analyzer })
+                != fxChain.contains(where: { $0.kind == .analyzer }) {
+                startSpectrumTimer()
+            }
             scheduleSave()
         }
     }
@@ -177,9 +218,14 @@ final class AppModel: ObservableObject {
     private let engine = RouterEngine()
     private let store = SettingsStore()
     private var displayTimer: Timer?
+    private var spectrumTimer: Timer?
     private var saveTimer: Timer?
+    private var lastSpectrumTick = Date()
+    private var engineRetryTimer: Timer?
+    private var engineRetryCount = 0
     private var lastTick = Date()
     private var slowTickCounter = 0
+    private var deviceListCounter = 0
     private var previousSystemOutputUID: String?
     private var isDiscovering = false
     private var isRebuildingSources = false
@@ -201,6 +247,7 @@ final class AppModel: ObservableObject {
         startSystemVolumeObserver()
         startEngine()
         startDisplayTimer()
+        startSpectrumTimer()
         // Materialise the file on first run so it always exists to be inspected
         // or hand-edited, and so a crash before the first fader move still
         // leaves a valid document behind.
@@ -210,6 +257,8 @@ final class AppModel: ObservableObject {
     func onTerminate() {
         stopSystemVolumeObserver()
         saveTimer?.invalidate()
+        engineRetryTimer?.invalidate()
+        spectrumTimer?.invalidate()
         // Stop first: releasing the borrowed volumes empties the record, and the
         // save below is what marks the exit as clean.
         engine.stop()
@@ -234,6 +283,8 @@ final class AppModel: ObservableObject {
                 + "from an unclean exit")
         }
         pairSettings = persisted.pairs
+        spectrumSettings = persisted.spectrum
+        safetyMuteEnabled = persisted.safetyMute
         fxChain = persisted.fxChain
         engine.fx.publish(FXChainSnapshot(fxChain))
         isDiscovering = true              // suppress the restarts in `didSet`
@@ -269,13 +320,16 @@ final class AppModel: ObservableObject {
                                      pairs: pairSettings,
                                      sources: merged,
                                      fxChain: fxChain,
+                                     spectrum: spectrumSettings,
+                                     safetyMute: safetyMuteEnabled,
                                      borrowedVolumes: engine.borrowedVolumeRecord))
     }
 
     func resetSettings() {
         storedSourceSettings = [:]
         fxChain = [FXDeviceSettings(kind: .reverb)]
-        pairSettings = Array(repeating: PairSettings(), count: SharedState.pairCount)
+        pairSettings = PairSettings.defaults
+        spectrumSettings = SpectrumSettings()
         rebuildSources(preservingCurrent: false)
         saveNow()
     }
@@ -346,6 +400,7 @@ final class AppModel: ObservableObject {
         outputCandidates = AudioDevices.multiOutputCandidates()
         loopback = AudioDevices.loopbackDevice()
         systemOutput = AudioDevices.systemDefaultOutput()
+        systemOutputCandidates = AudioDevices.outputDestinations()
 
         if selectedOutputUID == nil || !outputCandidates.contains(where: { $0.uid == selectedOutputUID }) {
             // Prefer a MOTU interface, otherwise the first device with enough outputs.
@@ -403,6 +458,28 @@ final class AppModel: ObservableObject {
         systemOutput = AudioDevices.systemDefaultOutput()
     }
 
+    /// Send system audio anywhere, the way the Sound pane would.
+    ///
+    /// Choosing something other than the loopback device is a deliberate
+    /// decision to stop feeding this app, so it also becomes what the app puts
+    /// back on quit; otherwise quitting would silently undo the choice.
+    func setSystemOutput(_ device: AudioDeviceInfo) {
+        guard AudioDevices.setSystemDefaultOutput(device) else { return }
+        if device.uid != loopback?.uid {
+            previousSystemOutputUID = device.uid
+        } else if previousSystemOutputUID == nil || previousSystemOutputUID == device.uid {
+            previousSystemOutputUID = systemOutput?.uid
+        }
+        systemOutput = AudioDevices.systemDefaultOutput()
+        Diagnostics.log("system output set to \(device.name)")
+    }
+
+    /// Let the outputs through before playback has proved itself.
+    func releaseSafetyMute() {
+        engine.shared.safetyMuted.value = false
+        isSafetyMuted = false
+    }
+
     // MARK: - Engine
 
     private func startEngine() {
@@ -416,24 +493,50 @@ final class AppModel: ObservableObject {
         }
 
         engine.start(output: output, loopback: loopback, sources: sources,
-                     recoveredVolumes: recoveredVolumes)
+                     recoveredVolumes: recoveredVolumes,
+                     safetyMute: safetyMuteEnabled)
 
         switch engine.state {
         case .running(let rate, let frames):
             sampleRate = rate
             bufferFrames = frames
             readiness = .ready
+            isSafetyMuted = engine.shared.safetyMuted.value
+            engineRetryTimer?.invalidate()
+            engineRetryCount = 0
             pushSources()
             pushPairs()
         case .failed(let message):
             readiness = .engineFailed(message)
+            scheduleEngineRetry()
         case .stopped:
             readiness = .engineFailed("The engine did not start.")
+            scheduleEngineRetry()
         }
+    }
+
+    /// An interface that has only just appeared on the bus can refuse to start
+    /// or come up with half its channels, so a failure right after a device
+    /// change is worth retrying a few times before it becomes the user's
+    /// problem. Attempts stop once the engine runs or the count is exhausted.
+    private func scheduleEngineRetry() {
+        engineRetryTimer?.invalidate()
+        guard engineRetryCount < 8 else { return }
+        engineRetryCount += 1
+        let timer = Timer(timeInterval: 1.2, repeats: false) { [weak self] _ in
+            Task { @MainActor in
+                guard let self, !self.isRunning else { return }
+                self.refreshDevices()
+                self.restartEngine()
+            }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        engineRetryTimer = timer
     }
 
     func restartEngine() {
         engine.stop()
+        isSafetyMuted = false
         startEngine()
     }
 
@@ -475,6 +578,8 @@ final class AppModel: ObservableObject {
             engine.shared.pairMuted[pair].value = pairSettings[pair].muted
             engine.fx.pairSend[pair].value = pairSettings[pair].fxSend
             engine.fx.pairReturn[pair].value = pairSettings[pair].fxReturn
+            engine.fx.pairDry[pair].value = pairSettings[pair].fxDry
+            engine.shared.pairToSpectrum[pair].value = pairSettings[pair].toSpectrum
         }
     }
 
@@ -508,7 +613,60 @@ final class AppModel: ObservableObject {
         displayTimer = timer
     }
 
+    /// True when something on screen is actually showing a spectrum: the panel
+    /// above the sources, an SA1 in the rack, or both.
+    private var spectrumIsShowing: Bool {
+        spectrumSettings.isVisible || fxChain.contains { $0.kind == .analyzer }
+    }
+
+    private func startSpectrumTimer() {
+        spectrumTimer?.invalidate()
+        guard spectrumIsShowing else {
+            spectrum.clear()
+            for analyzer in rackSpectra { analyzer.clear() }
+            return
+        }
+        lastSpectrumTick = Date()
+        let timer = Timer(timeInterval: 1.0 / spectrumSettings.refreshHz, repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.spectrumTick() }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        spectrumTimer = timer
+    }
+
+    /// The analyser is the one thing here that costs real arithmetic, so it does
+    /// nothing at all unless it is both visible and being fed.
+    private func spectrumTick() {
+        guard spectrumIsShowing,
+              NSApp?.occlusionState.contains(.visible) ?? true else { return }
+        guard isRunning, sampleRate > 0 else {
+            spectrum.clear()
+            for analyzer in rackSpectra { analyzer.clear() }
+            return
+        }
+        let now = Date()
+        let delta = min(now.timeIntervalSince(lastSpectrumTick), 0.25)
+        lastSpectrumTick = now
+
+        if spectrumSettings.isVisible {
+            spectrum.update(tap: engine.shared.spectrum, settings: spectrumSettings,
+                            sampleRate: sampleRate, delta: delta)
+        }
+        // Each SA1 reads the bus where it is mounted, so they are analysed
+        // separately even though they share a look.
+        let taps = engine.fxTaps
+        for slot in 0..<min(fxChain.count, taps.count) where fxChain[slot].kind == .analyzer {
+            rackSpectra[slot].update(tap: taps[slot], settings: spectrumSettings,
+                                     sampleRate: sampleRate, delta: delta)
+        }
+    }
+
     private func tick() {
+        // Read before the occlusion check: the safety mute is audible, so its
+        // state has to stay current even with the window hidden.
+        let engaged = engine.shared.safetyMuted.value
+        if engaged != isSafetyMuted { isSafetyMuted = engaged }
+
         // Nothing to draw when the window is hidden behind something or the app
         // is in the background, and this is the only continuous work we do.
         guard NSApp?.occlusionState.contains(.visible) ?? true else {
@@ -529,6 +687,15 @@ final class AppModel: ObservableObject {
             let current = AudioDevices.systemDefaultOutput()
             if current?.uid != systemOutput?.uid { systemOutput = current }
             if loopback == nil || outputCandidates.isEmpty { refreshDevices() }
+
+            // The output menu is cheap to rebuild but not free, so it refreshes
+            // on its own slower beat rather than twice a second.
+            deviceListCounter += 1
+            if deviceListCounter >= 4 {
+                deviceListCounter = 0
+                let destinations = AudioDevices.outputDestinations()
+                if destinations != systemOutputCandidates { systemOutputCandidates = destinations }
+            }
         }
     }
 }

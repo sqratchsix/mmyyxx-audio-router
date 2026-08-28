@@ -125,6 +125,14 @@ enum AudioDevices {
         all().first { $0.isBlackHole && $0.inputChannels >= 2 }
     }
 
+    /// Everything macOS could send system audio to, for the app's own copy of
+    /// the Sound output list.
+    static func outputDestinations() -> [AudioDeviceInfo] {
+        all()
+            .filter { $0.outputChannels > 0 && $0.uid != AggregateDevice.privateUID }
+            .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+    }
+
     static func systemDefaultOutput() -> AudioDeviceInfo? {
         guard let id = CA.value(AudioObjectID(kAudioObjectSystemObject),
                                 CA.addr(kAudioHardwarePropertyDefaultOutputDevice),
@@ -182,6 +190,55 @@ enum AudioDevices {
             return false
         }
         return CA.setValue(id, address, Float32(value)) == noErr
+    }
+
+    /// Per-channel mute, where the device offers one.
+    ///
+    /// Separate from the volume: an interface can sit at unity and still be
+    /// muted, which looks from the app's side exactly like a dead output.
+    static func outputMute(_ id: AudioObjectID, channel: UInt32) -> Bool? {
+        var address = CA.addr(kAudioDevicePropertyMute,
+                              scope: kAudioDevicePropertyScopeOutput,
+                              element: channel)
+        guard AudioObjectHasProperty(id, &address) else { return nil }
+        guard let value = CA.value(id, address, as: UInt32.self) else { return nil }
+        return value != 0
+    }
+
+    @discardableResult
+    static func setOutputMute(_ id: AudioObjectID, channel: UInt32, _ muted: Bool) -> Bool {
+        var address = CA.addr(kAudioDevicePropertyMute,
+                              scope: kAudioDevicePropertyScopeOutput,
+                              element: channel)
+        guard AudioObjectHasProperty(id, &address) else { return false }
+        var settable: DarwinBoolean = false
+        guard AudioObjectIsPropertySettable(id, &address, &settable) == noErr, settable.boolValue else {
+            return false
+        }
+        return CA.setValue(id, address, UInt32(muted ? 1 : 0)) == noErr
+    }
+
+    static func observeOutputMute(_ id: AudioObjectID,
+                                  channel: UInt32,
+                                  handler: @escaping () -> Void) -> AudioObjectPropertyListenerBlock? {
+        var address = CA.addr(kAudioDevicePropertyMute,
+                              scope: kAudioDevicePropertyScopeOutput,
+                              element: channel)
+        guard AudioObjectHasProperty(id, &address) else { return nil }
+        let block: AudioObjectPropertyListenerBlock = { _, _ in handler() }
+        guard AudioObjectAddPropertyListenerBlock(id, &address, DispatchQueue.main, block) == noErr else {
+            return nil
+        }
+        return block
+    }
+
+    static func stopObservingOutputMute(_ id: AudioObjectID,
+                                        channel: UInt32,
+                                        block: @escaping AudioObjectPropertyListenerBlock) {
+        var address = CA.addr(kAudioDevicePropertyMute,
+                              scope: kAudioDevicePropertyScopeOutput,
+                              element: channel)
+        AudioObjectRemovePropertyListenerBlock(id, &address, DispatchQueue.main, block)
     }
 
     /// The driver's own idea of the current volume in dB. Worth reading rather

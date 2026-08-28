@@ -7,6 +7,8 @@ struct SourceStrip: View {
     /// Plain `let`, not `@ObservedObject`: only the meter leaf subscribes.
     let meters: MeterModel
     let meterIndex: Int
+    /// Set by the row, which divides the available width between the sections.
+    let width: CGFloat
     @Binding var settings: SourceSettings
     let pairLabels: [String]
     /// When set, this strip's fader drives an external control instead of the
@@ -17,6 +19,8 @@ struct SourceStrip: View {
     var externalIsSilent = false
 
     private var muted: Bool { settings.muted }
+
+    private var trackWidth: CGFloat { width - Strip.horizontalPadding * 2 }
 
     /// Whether this source actually reaches an output right now. All three of
     /// these block it, and each one is easy to leave set by accident.
@@ -38,13 +42,13 @@ struct SourceStrip: View {
                     Fader(position: $settings.gainDB.faderTravel)
                 }
             }
-            .frame(height: 172)
+            .frame(height: Strip.faderHeight)
 
             Text(externalReadout ?? LevelMath.format(dB: settings.gainDB))
                 .font(Theme.numeric(10))
                 .foregroundStyle(muted ? Theme.textTertiary : Theme.textPrimary)
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 3)
+                .frame(maxWidth: .infinity,
+                       minHeight: Strip.readoutHeight, maxHeight: Strip.readoutHeight)
                 .background(WellBackground(cornerRadius: 4))
 
             if source.isStereo {
@@ -53,10 +57,10 @@ struct SourceStrip: View {
                     .font(Theme.label(7, weight: .semibold))
                     .tracking(0.6)
                     .foregroundStyle(Theme.textTertiary)
-                    .frame(height: 16)
+                    .frame(height: Strip.utilityRowHeight)
             } else {
                 PanSlider(pan: $settings.pan)
-                    .frame(height: 16)
+                    .frame(height: Strip.utilityRowHeight)
             }
 
             Button { settings.muted.toggle() } label: {
@@ -68,29 +72,30 @@ struct SourceStrip: View {
             }
             .buttonStyle(ToggleChipStyle(isOn: muted, tint: Theme.danger))
 
-            MiniSlider(label: "FX", value: $settings.fxSend, tint: Rack.sendTint)
+            StripKnob(label: "FX", value: $settings.fxSend, tint: Rack.sendTint)
 
-            VStack(spacing: 3) {
-                Text("SEND")
-                    .font(Theme.label(7, weight: .semibold))
-                    .tracking(0.7)
-                    .foregroundStyle(Theme.textTertiary)
-                HStack(spacing: 3) {
-                    ForEach(0..<min(settings.sends.count, pairLabels.count), id: \.self) { pair in
-                        Button { settings.sends[pair].toggle() } label: {
-                            Text(pairLabels[pair])
-                                .font(Theme.numeric(8, weight: .bold))
-                                .frame(maxWidth: .infinity)
-                                .padding(.vertical, 3)
-                        }
-                        .buttonStyle(ToggleChipStyle(isOn: settings.sends[pair], tint: Theme.accent))
+            // Directly under the send knob, which puts it on the same line as
+            // the output strips' SPEC button: both strips carry the same rows
+            // above this one, so neither has to be padded to agree with the
+            // other. The heading is gone with the spacer; the pair numbers and
+            // the tooltip say what these are.
+            HStack(spacing: 3) {
+                ForEach(0..<min(settings.sends.count, pairLabels.count), id: \.self) { pair in
+                    Button { settings.sends[pair].toggle() } label: {
+                        Text(pairLabels[pair])
+                            .font(Theme.numeric(8, weight: .bold))
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 4)
                     }
+                    .buttonStyle(ToggleChipStyle(isOn: settings.sends[pair], tint: Theme.accent))
+                    .help("Send this source to \(pairLabels[pair])")
                 }
             }
         }
         .padding(.vertical, 10)
-        .padding(.horizontal, 8)
-        .frame(width: 78)
+        .padding(.horizontal, Strip.horizontalPadding)
+        .frame(width: width)
+        .frame(maxHeight: .infinity, alignment: .top)
         .background(PanelBackground())
     }
 
@@ -105,21 +110,23 @@ struct SourceStrip: View {
         return nil
     }
 
+    /// Device on top, channel name below, in the same two sizes the output
+    /// strips use. That puts every channel name in the row on one line.
     private var header: some View {
         VStack(spacing: 1) {
+            Text(blockedReason ?? source.detail)
+                .font(Theme.label(8, weight: blockedReason == nil ? .semibold : .bold))
+                .tracking(blockedReason == nil ? 0.9 : 0.5)
+                .foregroundStyle(blockedReason == nil ? Theme.textSecondary : Theme.meterAmber)
+                .lineLimit(1)
+                .minimumScaleFactor(0.7)
             Text(source.name)
-                .font(Theme.label(11, weight: .bold))
+                .font(Theme.label(13, weight: .bold))
                 .foregroundStyle(isPassing ? Theme.textPrimary : Theme.textTertiary)
                 .lineLimit(1)
                 .minimumScaleFactor(0.7)
-            Text(blockedReason ?? source.detail)
-                .font(Theme.label(7, weight: blockedReason == nil ? .medium : .bold))
-                .tracking(blockedReason == nil ? 0 : 0.5)
-                .foregroundStyle(blockedReason == nil ? Theme.textTertiary : Theme.meterAmber)
-                .lineLimit(1)
-                .minimumScaleFactor(0.7)
         }
-        .frame(height: 24)
+        .frame(height: Strip.headerHeight)
     }
 }
 

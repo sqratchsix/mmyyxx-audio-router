@@ -7,6 +7,10 @@ struct Knob: View {
     var diameter: CGFloat = 30
     var resetValue: Double?
     var isActive: Bool = true
+    /// When set, the knob wears a value arc in this colour and the body shrinks
+    /// to make room for it. The rack's knobs leave it nil and keep the plain
+    /// engraved look.
+    var tint: Color?
     /// Rotation limits, matching a real pot's ~300 degrees of travel.
     private let sweep: Double = 300
 
@@ -16,6 +20,22 @@ struct Knob: View {
         let angle = Angle(degrees: -sweep / 2 + sweep * min(max(value, 0), 1))
 
         ZStack {
+            if let tint {
+                // Track, then the travelled part of it. Drawn from the same
+                // sweep the pointer uses, so the two can never disagree.
+                Circle()
+                    .trim(from: 0, to: CGFloat(sweep / 360))
+                    .stroke(Color.black.opacity(0.45),
+                            style: StrokeStyle(lineWidth: 2, lineCap: .round))
+                    .rotationEffect(.degrees(-90 - sweep / 2))
+                Circle()
+                    .trim(from: 0, to: CGFloat(min(max(value, 0), 1) * sweep / 360))
+                    .stroke(isActive ? tint : tint.opacity(0.35),
+                            style: StrokeStyle(lineWidth: 2, lineCap: .round))
+                    .rotationEffect(.degrees(-90 - sweep / 2))
+                    .shadow(color: isActive ? tint.opacity(0.5) : .clear, radius: 3)
+            }
+
             // Body: dark metal with a light source above.
             Circle()
                 .fill(
@@ -31,12 +51,13 @@ struct Knob: View {
                         .padding(1)
                 )
                 .shadow(color: .black.opacity(0.6), radius: 2, y: 1)
+                .padding(tint == nil ? 0 : 4)
 
             // Pointer.
             Capsule()
                 .fill(isActive ? Color(white: 0.93) : Color(white: 0.42))
-                .frame(width: 2, height: diameter * 0.34)
-                .offset(y: -diameter * 0.24)
+                .frame(width: 2, height: diameter * (tint == nil ? 0.34 : 0.26))
+                .offset(y: -diameter * (tint == nil ? 0.24 : 0.20))
                 .rotationEffect(angle)
         }
         .frame(width: diameter, height: diameter)
@@ -64,57 +85,35 @@ struct Knob: View {
     }
 }
 
-/// Small labelled horizontal control for the send amounts on the channel strips,
-/// where a full knob would not fit.
-struct MiniSlider: View {
+/// A send or return on a channel strip: knob, value, label. Sized to whatever
+/// column it is put in, so three of them fit an output strip and one fills a
+/// source strip.
+struct StripKnob: View {
     let label: String
     @Binding var value: Float           // 0...1
     var tint: Color = Theme.accent
-    var trackWidth: CGFloat = 62
+    var diameter: CGFloat = 26
+    /// Where a double-click sends it. A send falls to nothing, a return and the
+    /// dry path go back to unity.
+    var resetValue: Double = 0
 
     var body: some View {
-        VStack(spacing: 2) {
-            HStack(spacing: 0) {
-                Text(label)
-                    .font(Theme.label(7, weight: .semibold))
-                    .tracking(0.5)
-                    .foregroundStyle(Theme.textTertiary)
-                Spacer(minLength: 2)
-                Text(value <= 0.001 ? "off" : "\(Int(value * 100))")
-                    .font(Theme.numeric(7, weight: .medium))
-                    .foregroundStyle(value <= 0.001 ? Theme.textTertiary : tint)
-            }
-            // Fixed width rather than a GeometryReader: these sit inside
-            // fixed-width strips, and a GeometryReader here costs a layout pass
-            // every time the meters tick.
-            let width = trackWidth
-            ZStack(alignment: .leading) {
-                Capsule()
-                    .fill(Theme.well)
-                    .frame(width: width, height: 4)
-                    .overlay(Capsule().strokeBorder(.black.opacity(0.55), lineWidth: 1))
-                Capsule()
-                    .fill(tint.opacity(0.8))
-                    .frame(width: max(0, CGFloat(value) * width), height: 4)
-                Circle()
-                    .fill(
-                        LinearGradient(colors: [Color(white: 0.86), Color(white: 0.60)],
-                                       startPoint: .top, endPoint: .bottom)
-                    )
-                    .frame(width: 8, height: 8)
-                    .shadow(color: .black.opacity(0.5), radius: 1, y: 1)
-                    .offset(x: max(0, CGFloat(value) * width - 4))
-            }
-            .frame(width: width, height: 9)
-            .contentShape(Rectangle())
-            .gesture(
-                DragGesture(minimumDistance: 0)
-                    .onChanged { drag in
-                        value = Float(min(max(drag.location.x / width, 0), 1))
-                    }
-            )
-            .onTapGesture(count: 2) { value = 0 }
+        VStack(spacing: 1) {
+            Knob(value: Binding(get: { Double(value) },
+                                set: { value = Float(min(max($0, 0), 1)) }),
+                 diameter: diameter,
+                 resetValue: resetValue,
+                 isActive: value > 0.001,
+                 tint: tint)
+            Text(value <= 0.001 ? "off" : "\(Int((value * 100).rounded()))")
+                .font(Theme.numeric(7, weight: .medium))
+                .foregroundStyle(value <= 0.001 ? Theme.textTertiary : tint)
+            Text(label)
+                .font(Theme.label(7, weight: .semibold))
+                .tracking(0.5)
+                .foregroundStyle(Theme.textTertiary)
         }
+        .frame(maxWidth: .infinity)
         .accessibilityElement()
         .accessibilityLabel(label)
         .accessibilityValue("\(Int(value * 100)) percent")

@@ -6,9 +6,13 @@ struct ChannelStrip: View {
     let channels: String
     let meters: MeterModel
     let pair: Int
+    /// Set by the row, which divides the available width between the sections.
+    let width: CGFloat
     @Binding var settings: PairSettings
 
     private var muted: Bool { settings.muted }
+
+    private var trackWidth: CGFloat { width - Strip.horizontalPadding * 2 }
 
     var body: some View {
         VStack(spacing: 8) {
@@ -18,13 +22,13 @@ struct ChannelStrip: View {
                 OutputMeterPair(meters: meters, pair: pair)
                 Fader(position: $settings.gainDB.faderTravel)
             }
-            .frame(height: 172)
+            .frame(height: Strip.faderHeight)
 
             Text(LevelMath.format(dB: settings.gainDB))
                 .font(Theme.numeric(11))
                 .foregroundStyle(muted ? Theme.textTertiary : Theme.textPrimary)
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 3)
+                .frame(maxWidth: .infinity,
+                       minHeight: Strip.readoutHeight, maxHeight: Strip.readoutHeight)
                 .background(WellBackground(cornerRadius: 4))
                 .overlay(alignment: .trailing) {
                     Text("dB")
@@ -34,11 +38,7 @@ struct ChannelStrip: View {
                 }
 
             ClipIndicator(meters: meters, pair: pair)
-
-            VStack(spacing: 4) {
-                MiniSlider(label: "FX SEND", value: $settings.fxSend, tint: Rack.sendTint, trackWidth: 88)
-                MiniSlider(label: "FX RET", value: $settings.fxReturn, tint: Theme.meterGreen, trackWidth: 88)
-            }
+                .frame(height: Strip.utilityRowHeight)
 
             Button { settings.muted.toggle() } label: {
                 Text("MUTE")
@@ -49,11 +49,36 @@ struct ChannelStrip: View {
             }
             .buttonStyle(ToggleChipStyle(isOn: muted, tint: Theme.danger))
 
-            Spacer(minLength: 0)
+            HStack(spacing: 2) {
+                StripKnob(label: "SEND", value: $settings.fxSend, tint: Rack.sendTint)
+                StripKnob(label: "RET", value: $settings.fxReturn,
+                          tint: Theme.meterGreen, resetValue: 1)
+                // Down with the send up, the rack stops being a parallel effect
+                // and becomes an insert on this output, which is what an EQ in
+                // the chain wants.
+                StripKnob(label: "DRY", value: $settings.fxDry,
+                          tint: Theme.accent, resetValue: 1)
+            }
+
+            // Feeds this pair's post-fader bus to the analyser above the
+            // sources. Independent of mute: a muted pair has nothing to show.
+            Button { settings.toSpectrum.toggle() } label: {
+                HStack(spacing: 3) {
+                    Image(systemName: "waveform").font(.system(size: 7, weight: .bold))
+                    Text("SPEC")
+                        .font(Theme.label(8, weight: .bold))
+                        .tracking(0.5)
+                }
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 4)
+            }
+            .buttonStyle(ToggleChipStyle(isOn: settings.toSpectrum, tint: Theme.accent))
+            .help("Send this pair to the spectrum analyser")
         }
         .padding(.vertical, 10)
-        .padding(.horizontal, 8)
-        .frame(width: 104)
+        .padding(.horizontal, Strip.horizontalPadding)
+        .frame(width: width)
+        .frame(maxHeight: .infinity, alignment: .top)
         .background(PanelBackground())
     }
 
@@ -67,7 +92,7 @@ struct ChannelStrip: View {
                 .font(Theme.numeric(13, weight: .bold))
                 .foregroundStyle(muted ? Theme.textTertiary : Theme.textPrimary)
         }
-        .frame(height: 24)
+        .frame(height: Strip.headerHeight)
     }
 
 }
